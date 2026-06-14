@@ -1,0 +1,689 @@
+{
+  "phase": {
+    "id": "initial-enumeration",
+    "title": "Initial System Enumeration",
+    "summary": "Fingerprint the host: OS version, architecture, patches, drives, network, processes. Everything downstream depends on this.",
+    "icon": "scan-search"
+  },
+  "nodes": [
+    {
+      "id": "enum-systeminfo",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "systeminfo / OS fingerprint",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Identify OS name, version, build number, and architecture. Drives Windows-Exploit-Suggester later.",
+      "description_md": "`systeminfo` is the canonical first command on every Windows target. The OS Name + Version + Build + Hotfix list is the input to kernel-exploit suggestion tools like wesng/Watson.",
+      "mitre_attack_id": "T1082",
+      "tags": [
+        "enumeration",
+        "host-info"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Core OS fields",
+          "code": "systeminfo | findstr /B /C:\"OS Name\" /C:\"OS Version\" /C:\"System Type\" /C:\"Host Name\""
+        },
+        {
+          "shell": "powershell",
+          "title": "Get-ComputerInfo (PS 5+)",
+          "code": "Get-ComputerInfo | Select-Object CsName, OsName, OsVersion, OsBuildNumber, OsArchitecture, OsHotFixes"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1082",
+          "url": "https://attack.mitre.org/techniques/T1082/",
+          "kind": "mitre"
+        }
+      ],
+      "detection_hints": "`systeminfo.exe` from non-admin user contexts; Sysmon 1 with command line `systeminfo`."
+    },
+    {
+      "id": "enum-hotfixes",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Installed patches (KB list)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "List installed hotfixes; missing KBs map to public kernel exploits.",
+      "description_md": "Feed the KB list into wesng or Watson to suggest candidate CVEs.",
+      "tags": [
+        "enumeration",
+        "patches"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "wmic qfe",
+          "code": "wmic qfe get Caption,Description,HotFixID,InstalledOn"
+        },
+        {
+          "shell": "powershell",
+          "title": "Get-HotFix",
+          "code": "Get-HotFix | Sort-Object -Property InstalledOn -Descending"
+        }
+      ],
+      "references": [
+        {
+          "title": "wesng",
+          "url": "https://github.com/bitsadmin/wesng",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "enum-arch",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Process architecture (x86 / x64)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Choose the right payload + tool architecture for the host.",
+      "description_md": "Some Potato variants and kernel exploits are arch-specific. KiTrap0D is x86-only; JuicyPotato is x64-only.",
+      "tags": [
+        "enumeration",
+        "host-info"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Env var",
+          "code": "echo %PROCESSOR_ARCHITECTURE%"
+        },
+        {
+          "shell": "powershell",
+          "title": "Native arch",
+          "code": "[Environment]::Is64BitOperatingSystem; [Environment]::Is64BitProcess"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "enum-env",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Environment variables",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Read PATH, TEMP, USERPROFILE, and any custom vars that may contain credentials or hint at app installs.",
+      "description_md": "Custom env vars set by sysadmins occasionally contain plaintext passwords or API tokens.",
+      "mitre_attack_id": "T1083",
+      "tags": [
+        "enumeration",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "set",
+          "code": "set"
+        },
+        {
+          "shell": "powershell",
+          "title": "Env:",
+          "code": "Get-ChildItem Env: | Format-Table -AutoSize"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1083",
+          "url": "https://attack.mitre.org/techniques/T1083/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "enum-drives",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Drives & mounted shares",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Enumerate logical drives, mapped network shares, and removable media that may contain credentials or backups.",
+      "description_md": "Watch for non-default drives (D:, E:) — they often host backups, code repositories, or legacy installations with weak ACLs.",
+      "tags": [
+        "enumeration",
+        "filesystem"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Logical disks",
+          "code": "wmic logicaldisk get caption,description,providername,filesystem,freespace,size"
+        },
+        {
+          "shell": "cmd",
+          "title": "Mapped shares",
+          "code": "net use"
+        },
+        {
+          "shell": "powershell",
+          "title": "PSDrive",
+          "code": "Get-PSDrive -PSProvider FileSystem"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "enum-network",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Network interfaces, routes & listeners",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Identify dual-homed hosts, internal subnets, and locally bound services that may be exploitable.",
+      "description_md": "Bound-to-localhost services often skip authentication and are excellent privesc surfaces.",
+      "mitre_attack_id": "T1016",
+      "tags": [
+        "enumeration",
+        "network"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Interfaces",
+          "code": "ipconfig /all"
+        },
+        {
+          "shell": "cmd",
+          "title": "Routes & ARP",
+          "code": "route print\narp -a"
+        },
+        {
+          "shell": "cmd",
+          "title": "Listening ports",
+          "code": "netstat -ano | findstr LISTENING"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1016",
+          "url": "https://attack.mitre.org/techniques/T1016/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "enum-installed-software",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Installed software",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Third-party software is the #1 source of writable service binaries and unquoted paths.",
+      "description_md": "`wmic product` is reliable but slow (it triggers MSI repair). Prefer the registry uninstall keys for speed.",
+      "tags": [
+        "enumeration",
+        "software"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Registry uninstall keys (fast)",
+          "code": "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*, HKLM:\\Software\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* |\n  Select-Object DisplayName, DisplayVersion, Publisher, InstallLocation |\n  Where-Object DisplayName"
+        },
+        {
+          "shell": "cmd",
+          "title": "wmic product (slow)",
+          "code": "wmic product get name,version,vendor"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "enum-processes",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Running processes & owners",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Find services running as SYSTEM with binaries in non-standard paths — prime hijack targets.",
+      "description_md": "Cross-reference process image paths with writable directories from later phases (`path-*`, `svc-*`).",
+      "mitre_attack_id": "T1057",
+      "tags": [
+        "enumeration",
+        "processes"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "tasklist with owner",
+          "code": "tasklist /v /fo list"
+        },
+        {
+          "shell": "powershell",
+          "title": "Process + owner",
+          "code": "Get-CimInstance Win32_Process | Select-Object Name, ProcessId, ExecutablePath, @{N='Owner';E={ ($_ | Invoke-CimMethod -MethodName GetOwner).User }}"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1057",
+          "url": "https://attack.mitre.org/techniques/T1057/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "enum-pending-reboot",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Pending reboot / staged updates",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "summary": "Hosts with staged updates may be missing a fix that *would* close your foothold — exploit before the next reboot.",
+      "description_md": "Several registry signals indicate a pending reboot.",
+      "tags": [
+        "enumeration",
+        "patches"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check common pending-reboot keys",
+          "code": "Test-Path 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'\nTest-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired'"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "enum-os-version",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "OS build & version detail",
+      "summary": "Pin the exact Windows build so kernel-exploit and bypass selection is precise.",
+      "description_md": "`systeminfo` is broad; the **build number** is what drives exploit choice. Read it from the registry or `ver`. Map the build to a release (e.g. 19045 = 22H2) before picking a Potato variant or kernel CVE.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1082",
+      "tags": [
+        "enumeration",
+        "os-version"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Quick version",
+          "code": "ver"
+        },
+        {
+          "shell": "powershell",
+          "title": "Build from registry",
+          "code": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' | Select-Object ProductName, DisplayVersion, CurrentBuild, UBR"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1082 — System Information Discovery",
+          "url": "https://attack.mitre.org/techniques/T1082/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "enum-qfe-patches",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Installed patches via WMIC QFE",
+      "summary": "List applied hotfixes to find missing patches a kernel exploit can target.",
+      "description_md": "`wmic qfe` enumerates Quick-Fix Engineering updates. Cross-reference the list against known privesc CVEs (or feed it to **wesng** / Watson). A short list of recent KBs often means an unpatched box.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1082",
+      "tags": [
+        "enumeration",
+        "patches"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "List hotfixes",
+          "code": "wmic qfe get HotFixID,InstalledOn,Description"
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell equivalent",
+          "code": "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 20"
+        }
+      ],
+      "references": [
+        {
+          "title": "wesng — Windows Exploit Suggester NG",
+          "url": "https://github.com/bitsadmin/wesng",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "enum-firewall-state",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Windows Firewall state",
+      "summary": "Inspect firewall profiles & rules to plan reverse shells and pivoting.",
+      "description_md": "Knowing which outbound ports are allowed shapes your callback choice. Disabled profiles or permissive outbound rules mean a reverse shell on 443/53 is likely to succeed.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "firewall",
+        "network"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Profile state",
+          "code": "netsh advfirewall show allprofiles state"
+        },
+        {
+          "shell": "cmd",
+          "title": "Dump rules",
+          "code": "netsh advfirewall firewall show rule name=all"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Windows Local Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "enum-defender-status",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Microsoft Defender status",
+      "summary": "Check real-time protection, tamper protection, and exclusion paths.",
+      "description_md": "`Get-MpComputerStatus` reveals whether real-time protection is on. `Get-MpPreference` lists **exclusion paths/extensions** — dropping your tooling into an excluded folder sidesteps AV entirely.",
+      "severity": "low",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "defender",
+        "av"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Engine status",
+          "code": "Get-MpComputerStatus | Select-Object AMServiceEnabled, RealTimeProtectionEnabled, IsTamperProtected"
+        },
+        {
+          "shell": "powershell",
+          "title": "Exclusions",
+          "code": "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath"
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — Get-MpComputerStatus",
+          "url": "https://learn.microsoft.com/en-us/powershell/module/defender/get-mpcomputerstatus",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "enum-av-products",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Installed AV / EDR products",
+      "summary": "Identify the endpoint security product to tune evasion.",
+      "description_md": "The `AntiVirusProduct` WMI namespace lists registered security products. Process and service names also fingerprint EDRs (e.g. `cb.exe`, `SentinelAgent`, `csfalcon`).",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "av",
+        "edr"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Registered AV",
+          "code": "wmic /namespace:\\\\root\\SecurityCenter2 path AntiVirusProduct get displayName,productState"
+        },
+        {
+          "shell": "powershell",
+          "title": "EDR-ish services",
+          "code": "Get-Service | Where-Object { $_.DisplayName -match 'defender|crowdstrike|sentinel|carbon|cylance|sophos' }"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — AV Bypass",
+          "url": "https://book.hacktricks.xyz/windows-hardening/av-bypass",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "enum-applocker-policy",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AppLocker / WDAC policy",
+      "summary": "Read the application-control policy to find allowed execution paths.",
+      "description_md": "AppLocker rules frequently allow execution from writable paths (e.g. `C:\\Windows\\Tasks`, `C:\\Windows\\Temp`). Enumerate the effective policy to find an allowed directory you can write to.",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "enumeration",
+        "applocker",
+        "wdac"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Effective AppLocker policy",
+          "code": "Get-AppLockerPolicy -Effective -Xml"
+        },
+        {
+          "shell": "powershell",
+          "title": "Test a path",
+          "code": "Get-AppLockerPolicy -Effective | Test-AppLockerPolicy -Path C:\\Windows\\Temp\\test.exe -User Everyone"
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — AppLocker",
+          "url": "https://learn.microsoft.com/en-us/windows/security/application-security/application-control/applocker/applocker-overview",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "enum-laps-presence",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "LAPS presence",
+      "summary": "Detect LAPS so you know local-admin passwords may be AD-readable.",
+      "description_md": "If `AdmPwd.dll` or the LAPS CSE is present, the local administrator password is randomized and stored in AD (`ms-Mcs-AdmPwd`). Readable by delegated principals — note it for the AD bridge.",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "enumeration",
+        "laps",
+        "ad"
+      ],
+      "related": [
+        "ad-acl-abuse"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check for LAPS CSE",
+          "code": "Get-ChildItem 'C:\\Program Files\\LAPS\\CSE\\AdmPwd.dll' -ErrorAction SilentlyContinue; Get-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft Services\\AdmPwd' -ErrorAction SilentlyContinue"
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — LAPS",
+          "url": "https://learn.microsoft.com/en-us/windows-server/identity/laps/laps-overview",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "enum-integrity-uac",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Integrity level & UAC config",
+      "summary": "Determine your integrity level and whether UAC bypass is needed.",
+      "description_md": "If you're a member of Administrators but running at **Medium** integrity, you need a UAC bypass to get a High-integrity token. `whoami /groups` shows the integrity label; the registry shows the UAC posture (`EnableLUA`, `ConsentPromptBehaviorAdmin`).",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "uac",
+        "integrity"
+      ],
+      "related": [
+        "uac-fodhelper"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Integrity level",
+          "code": "whoami /groups | findstr /i \"Label\""
+        },
+        {
+          "shell": "cmd",
+          "title": "UAC posture",
+          "code": "reg query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v EnableLUA & reg query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v ConsentPromptBehaviorAdmin"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "enum-shares-mapped",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Mapped & local shares",
+      "summary": "List SMB shares and mapped drives that may expose credentials or write targets.",
+      "description_md": "Network shares often hold scripts, backups, and config files with credentials. Writable shares referenced by SYSTEM services or scheduled tasks are direct privesc vectors.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "shares",
+        "smb"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Local shares & mappings",
+          "code": "net share & net use & wmic share get name,path"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1135 — Network Share Discovery",
+          "url": "https://attack.mitre.org/techniques/T1135/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "enum-powershell-langmode",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "PowerShell version & language mode",
+      "summary": "Check PS version and whether Constrained Language Mode is enforced.",
+      "description_md": "`$ExecutionContext.SessionState.LanguageMode` returns `FullLanguage` or `ConstrainedLanguage`. CLM blocks many offensive cmdlets — note it so you can plan a CLM bypass. PS v2 (if present) sidesteps AMSI and ScriptBlock logging.",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "enumeration",
+        "powershell",
+        "clm"
+      ],
+      "related": [
+        "bypass-clm"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Version & language mode",
+          "code": "$PSVersionTable.PSVersion; $ExecutionContext.SessionState.LanguageMode"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Constrained Language Mode",
+          "url": "https://book.hacktricks.xyz/windows-hardening/authentication-credentials-uac-and-efs",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "enum-scheduled-overview",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Scheduled tasks overview",
+      "summary": "Quick inventory of non-Microsoft scheduled tasks to triage in phase 8.",
+      "description_md": "A fast first pass: list tasks and flag any running as SYSTEM or pointing at non-standard paths. Deep analysis (writable scripts/binaries/ACLs) lives in the Scheduled Tasks phase.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "scheduled-tasks"
+      ],
+      "related": [
+        "task-enum"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "List tasks",
+          "code": "schtasks /query /fo LIST /v | findstr /i \"TaskName Run As User Task To Run\""
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — schtasks",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "enum-named-pipes",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Named pipe enumeration",
+      "summary": "List named pipes to spot impersonation and service IPC opportunities.",
+      "description_md": "Named pipes exposed by privileged services can enable impersonation primitives. Enumerate them and note any with weak ACLs or owned by SYSTEM services.",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "enumeration",
+        "named-pipes"
+      ],
+      "related": [
+        "uac-named-pipe"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "List pipes",
+          "code": "Get-ChildItem \\\\.\\pipe\\ | Select-Object -ExpandProperty Name"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Named Pipe Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/named-pipe-client-impersonation",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

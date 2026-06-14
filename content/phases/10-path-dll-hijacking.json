@@ -1,0 +1,361 @@
+{
+  "phase": {
+    "id": "path-dll-hijacking",
+    "title": "PATH & DLL Hijacking",
+    "summary": "Hijack DLL search order or a writable directory in %PATH% to get code execution as a higher-privileged process.",
+    "icon": "git-branch"
+  },
+  "nodes": [
+    {
+      "id": "path-writable-dir",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Writable directory in system %PATH%",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Drop a malicious binary named after a command that admins/services invoke without absolute path.",
+      "mitre_attack_id": "T1574.007",
+      "tags": [
+        "path",
+        "hijack"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Dump system PATH",
+          "code": "for %i in (%PATH:;= %) do @echo %i & icacls \"%i\" 2>nul | findstr /i \"everyone authenticated users\""
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.007",
+          "url": "https://attack.mitre.org/techniques/T1574/007/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "The Windows `%PATH%` environment variable lists directories searched when executing a program by bare name (without a full path). If any of these directories grants write access to a low-privileged user, the attacker can place a binary matching a command that administrators or privileged services invoke by name — without a full path — to hijack execution.\n\n**Discovery**:\n1. Print each PATH directory: `for %i in (%PATH:;= %) do @echo %i`\n2. Test writability: `accesschk.exe -uwdqs Users C:\\` or a PowerShell write-test loop\n3. Identify commands admins call by name (tools in `C:\\Windows\\System32\\` are safe, but custom entries like `C:\\Tools\\` may not be)\n\n**Example attack**: If `C:\\Tools\\` is writable and admins run `cleanup.bat` from any directory, planting `cleanup.bat` or a malicious `cmd.exe` there hijacks the next invocation.\n\n**Service hijacking variant**: Services that call helper binaries by bare name are excellent targets — they run as SYSTEM and don't require admin interaction.",
+      "detection_hints": "New executables/DLLs created in PATH directories; process creation from unexpected locations; registry write to `HKLM\\SYSTEM\\...\\Environment\\Path` adding user-writable directories."
+    },
+    {
+      "id": "path-dll-search-order",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "DLL Search-Order Hijack",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "App resolves a DLL by name from its load path — drop a malicious DLL earlier in the search order.",
+      "mitre_attack_id": "T1574.001",
+      "tags": [
+        "dll-hijack",
+        "search-order"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Procmon filter",
+          "code": "Operation = CreateFile AND Path ENDS WITH .dll AND Result = NAME NOT FOUND"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.001",
+          "url": "https://attack.mitre.org/techniques/T1574/001/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "Windows DLL search order (with `SafeDllSearchMode` enabled, the default since XP SP2) checks locations in this order:\n1. The application's directory\n2. `C:\\Windows\\System32`\n3. `C:\\Windows\\System`\n4. `C:\\Windows`\n5. The current working directory\n6. Directories in `%PATH%`\n\nAn attacker can hijack a DLL load if they can write to any directory that appears **before** the legitimate DLL's location in this order.\n\n**Discovery** (Procmon-based):\n- Filter: `Operation = CreateFile` AND `Path ends with .dll` AND `Result = NAME NOT FOUND`\n- Observe which directories are probed before the DLL is found (or not found)\n- Write a malicious DLL to the earliest writable location in the probe chain\n\n**Key**: The DLL must export the functions the host application expects — either implement the legitimate API or use DLL proxying to forward calls to the real DLL.",
+      "detection_hints": "DLL loads from unexpected directories (Sysmon EID 7); writes to directories before known DLL locations in the search order; new DLL files in application directories adjacent to signed binaries."
+    },
+    {
+      "id": "path-phantom-dll",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Phantom DLL Hijack",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "A SYSTEM service references a DLL that doesn't exist anywhere — provide it.",
+      "tags": [
+        "dll-hijack",
+        "phantom"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Identify with Procmon",
+          "code": "Find NAME NOT FOUND results for .dll requests from privileged processes."
+        }
+      ],
+      "references": [],
+      "description_md": "A phantom DLL is a DLL that a process attempts to load by name but that does not exist anywhere on the system. When a privileged process (SYSTEM service, scheduled task, or auto-elevating tool) has a phantom DLL dependency, any user who can write to any of the search-order directories can satisfy the load — and the DLL executes in the privileged process's context.\n\n**Discovery** (Procmon):\n1. Monitor the target service/process with Procmon\n2. Filter: `Result is NAME NOT FOUND` AND `Path ends with .dll`\n3. Note each missing DLL and which directories were probed\n4. Check if any probed directory is writable\n\n**Known phantom DLLs**: Some are historically well-known (e.g., `WLBSCTRL.dll`, `ntwdblib.dll` in the Windows system32 directory's predecessor path). These change with OS versions — always verify on the specific target.\n\n**DLL template**: A minimal DLL just needs `DllMain` — no API exports required since the process won't call any functions (it'll crash or continue gracefully based on the `LoadLibrary` error handling).",
+      "detection_hints": "DLL load from user-writable paths by SYSTEM-context processes; new DLL files appearing in locations adjacent to privileged binaries; Sysmon EID 7 with unexpected module paths."
+    },
+    {
+      "id": "path-current-dir",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Current-directory DLL load (legacy)",
+      "severity": "medium",
+      "difficulty": "oscp-advanced",
+      "summary": "Pre-SafeDllSearchMode apps load DLLs from CWD; useful on legacy XP/2003 boxes.",
+      "tags": [
+        "dll-hijack",
+        "legacy"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Concept",
+          "code": "Drop a malicious DLL into the user-writable working directory the target app is launched from. Only effective when SafeDllSearchMode is disabled or the app uses LoadLibrary on a bare DLL name."
+        }
+      ],
+      "references": [],
+      "description_md": "Before `SafeDllSearchMode` was enabled by default (pre-XP SP2), Windows searched the **current working directory (CWD)** for DLLs before `C:\\Windows\\System32`. Applications that explicitly disable `SafeDllSearchMode` (via `SetDllDirectory(\"\")` or the `HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\SafeDllSearchMode = 0` registry setting) revert to the legacy behavior.\n\n**Modern relevance**:\n- Legacy applications compiled without SafeDllSearchMode support\n- Applications that call `SetDllDirectory(\"\")` to reset the search path\n- Applications run from user-writable CWDs (e.g., `C:\\Temp\\`, `C:\\Users\\user\\`)\n\n**Attack**: If a privileged process starts in a user-writable directory, planting a DLL matching any of its imports there causes it to load the attacker's DLL before System32.\n\n**Verification**: Check `SafeDllSearchMode` registry setting; use Procmon to confirm the CWD is probed before System32 for the specific target.",
+      "detection_hints": "DLL loads from current working directories; processes starting from user-writable paths; registry setting `SafeDllSearchMode = 0`."
+    },
+    {
+      "id": "path-known-dlls-bypass",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "KnownDLLs & side-by-side abuse",
+      "summary": "DLLs outside the KnownDLLs protection are resolvable from the app directory.",
+      "description_md": "The `KnownDLLs` list pins system DLLs to System32, blocking hijack. Any import **not** in that list is resolved by the normal search order — so target non-KnownDLLs an app loads by name from its own directory.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.001",
+      "tags": [
+        "dll-hijacking",
+        "knowndlls"
+      ],
+      "related": [
+        "path-dll-search-order"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "List KnownDLLs",
+          "code": "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\KnownDLLs\""
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.001 — DLL Search Order Hijacking",
+          "url": "https://attack.mitre.org/techniques/T1574/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "path-com-hijack",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "COM server hijacking (HKCU)",
+      "summary": "Per-user CLSID registration shadows HKLM, loading your DLL into elevated callers.",
+      "description_md": "Windows checks `HKCU\\Software\\Classes\\CLSID` before `HKLM`. Registering an `InprocServer32` for a CLSID an elevated/scheduled process instantiates loads your DLL in that context. A favourite persistence-to-privesc primitive.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1546.015",
+      "detection_hints": "HKCU CLSID\\InprocServer32 writes pointing at user-writable DLL paths.",
+      "tags": [
+        "com",
+        "hijack",
+        "dll"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Register HKCU CLSID",
+          "code": "reg add \"HKCU\\Software\\Classes\\CLSID\\{GUID}\\InprocServer32\" /ve /d \"C:\\Temp\\evil.dll\" /f\nreg add \"HKCU\\Software\\Classes\\CLSID\\{GUID}\\InprocServer32\" /v ThreadingModel /d Apartment /f"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1546.015 — COM Hijacking",
+          "url": "https://attack.mitre.org/techniques/T1546/015/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "path-sideloading",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "DLL sideloading via signed EXE",
+      "summary": "Drop a malicious DLL beside a legitimate signed binary that loads it by name.",
+      "description_md": "Many signed vendor binaries load a companion DLL from their own folder. If that folder (or an installer drop path) is writable, planting the named DLL gets your code executed under the trusted process — bypassing some allow-listing.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1574.002",
+      "tags": [
+        "dll-hijacking",
+        "sideloading",
+        "lolbin"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find writable program dirs",
+          "code": "Get-ChildItem 'C:\\Program Files','C:\\Program Files (x86)' -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { (Get-Acl $_.FullName).Access | Where-Object { $_.IdentityReference -match 'Users|Everyone' -and $_.FileSystemRights -match 'Write' } }"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.002 — DLL Side-Loading",
+          "url": "https://attack.mitre.org/techniques/T1574/002/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "path-procmon-discovery",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Find hijacks with Procmon",
+      "summary": "Use Process Monitor to catch NAME NOT FOUND DLL/EXE loads from writable paths.",
+      "description_md": "Filter Procmon for `Result is NAME NOT FOUND` + path ends with `.dll`, run by a privileged process. Each missing DLL in a writable directory is a candidate phantom-DLL hijack.",
+      "severity": "medium",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "dll-hijacking",
+        "procmon",
+        "discovery"
+      ],
+      "related": [
+        "path-phantom-dll"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Procmon filter",
+          "code": "Filter: Result is NAME NOT FOUND\nFilter: Path ends with .dll\nObserve which privileged process probes a writable directory, then plant that DLL."
+        }
+      ],
+      "references": [
+        {
+          "title": "Sysinternals — Process Monitor",
+          "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/procmon",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "path-dotnet-deps",
+      "parent_id": null,
+      "kind": "technique",
+      "title": ".NET assembly / config hijack",
+      "summary": "Writable .NET app directories allow assembly redirection or DLL planting.",
+      "description_md": ".NET resolves dependent assemblies from the app base directory and honors `<probing>`/binding redirects in the `.exe.config`. A writable app folder lets you plant a managed DLL or rewrite the config to load yours.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "tags": [
+        "dll-hijacking",
+        "dotnet"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Targets",
+          "code": "- Plant <AppName>.dll dependency in the writable app base dir\n- Edit <AppName>.exe.config <probing privatePath=...> to add your dir"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — DLL Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/dll-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "path-writable-service-dir",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Writable directory of a service binary",
+      "summary": "If a SYSTEM service's own folder is writable, plant a DLL it imports.",
+      "description_md": "Service executables load DLLs from their install directory first. A writable service folder is a reliable hijack: drop a DLL the service imports (or a phantom one) and restart the service.",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.001",
+      "tags": [
+        "dll-hijacking",
+        "services"
+      ],
+      "related": [
+        "svc-dll-hijack"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check service dir ACL",
+          "code": "$svc = (Get-CimInstance Win32_Service -Filter \"Name='VulnSvc'\").PathName\n$dir = Split-Path ($svc.Trim('\"'))\nGet-Acl $dir | Format-List"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.001",
+          "url": "https://attack.mitre.org/techniques/T1574/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "path-dll-proxy",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "DLL proxying (export forwarding)",
+      "summary": "Forward legitimate exports to the real DLL so the host app keeps working.",
+      "description_md": "To hijack without breaking the target, build a proxy DLL that forwards every export to the original (`#pragma comment(linker, \"/export:Func=real.Func\")`) while your `DllMain` runs your code. Keeps the app stable and evades crashes.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "tags": [
+        "dll-hijacking",
+        "proxy"
+      ],
+      "snippets": [
+        {
+          "shell": "c",
+          "title": "Export forward pragma",
+          "code": "#pragma comment(linker, \"/export:DllFunc=real_orig.DllFunc,@1\")\nBOOL APIENTRY DllMain(HMODULE h, DWORD reason, LPVOID r){ if(reason==DLL_PROCESS_ATTACH){ /* run payload */ } return TRUE; }"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — DLL Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/dll-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "path-wer-hijack",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Writable PATH entry hijack",
+      "summary": "An early writable PATH directory wins name resolution for EXE/DLL lookups.",
+      "description_md": "When a privileged process launches a helper by bare name (no full path), the first PATH directory containing a match wins. A user-writable directory early in the system PATH lets you plant a same-named binary.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "path",
+        "hijack"
+      ],
+      "related": [
+        "reg-env-path",
+        "path-writable-dir"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Writable PATH dirs",
+          "code": "$env:Path -split ';' | ForEach-Object { if (Test-Path $_) { try { $t=Join-Path $_ 'w.tmp'; New-Item $t -ItemType File -EA Stop | Out-Null; Remove-Item $t; \"WRITABLE: $_\" } catch {} } }"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — DLL Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/dll-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

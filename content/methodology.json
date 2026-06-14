@@ -1,0 +1,78 @@
+{
+  "$schema": "./schema/methodology.schema.json",
+  "methodology_version": "1.1.0",
+  "title": "Windows Privilege Escalation",
+  "description": "Interactive methodology covering enumeration, token privileges, service misconfigurations, registry, stored credentials, scheduled tasks, DLL/PATH hijacking, UAC bypass, kernel exploits, and a bridge to Active Directory.",
+  "phases": [
+    {
+      "id": "initial-enumeration",
+      "ordinal": 1,
+      "file": "phases/01-initial-enumeration.json"
+    },
+    {
+      "id": "user-enumeration",
+      "ordinal": 2,
+      "file": "phases/02-user-enumeration.json"
+    },
+    {
+      "id": "token-privileges",
+      "ordinal": 3,
+      "file": "phases/03-token-privileges.json"
+    },
+    {
+      "id": "automated-tools",
+      "ordinal": 4,
+      "file": "phases/04-automated-tools.json"
+    },
+    {
+      "id": "service-misconfigurations",
+      "ordinal": 5,
+      "file": "phases/05-service-misconfigurations.json"
+    },
+    {
+      "id": "registry",
+      "ordinal": 6,
+      "file": "phases/06-registry.json"
+    },
+    {
+      "id": "stored-credentials",
+      "ordinal": 7,
+      "file": "phases/07-stored-credentials.json"
+    },
+    {
+      "id": "scheduled-tasks",
+      "ordinal": 8,
+      "file": "phases/08-scheduled-tasks.json"
+    },
+    {
+      "id": "startup-apps",
+      "ordinal": 9,
+      "file": "phases/09-startup-apps.json"
+    },
+    {
+      "id": "path-dll-hijacking",
+      "ordinal": 10,
+      "file": "phases/10-path-dll-hijacking.json"
+    },
+    {
+      "id": "uac-token-impersonation",
+      "ordinal": 11,
+      "file": "phases/11-uac-token-impersonation.json"
+    },
+    {
+      "id": "kernel-exploits",
+      "ordinal": 12,
+      "file": "phases/12-kernel-exploits.json"
+    },
+    {
+      "id": "defense-bypass",
+      "ordinal": 13,
+      "file": "phases/13-defense-bypass.json"
+    },
+    {
+      "id": "ad-bridge",
+      "ordinal": 14,
+      "file": "phases/14-ad-bridge.json"
+    }
+  ]
+}

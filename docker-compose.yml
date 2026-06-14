@@ -1,0 +1,60 @@
+# =============================================================================
+# WindowsPE — production compose for the backend.
+#
+# Frontend lives on Vercel (see README) — this file only manages the Rust API.
+# A reverse proxy (Caddy / Cloudflare Tunnel / nginx) typically sits in front
+# of this service to terminate TLS.
+#
+# Usage:
+#   docker compose up -d --build
+#   docker compose logs -f backend
+#   docker compose down            # stops; data volume persists
+#   docker compose down -v         # wipes the SQLite volume too
+# =============================================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: windowspe-backend:latest
+    container_name: windowspe-backend
+    restart: unless-stopped
+
+    ports:
+      # Bind to localhost only — reverse proxy hands off TLS on :443.
+      # Drop the `127.0.0.1:` prefix if you're exposing the backend directly.
+      # Host 8084 (Aero owns host 8080); container stays on 8080.
+      - "127.0.0.1:8084:8080"
+
+    environment:
+      WINDOWSPE_BIND_ADDR:      "0.0.0.0:8080"
+      WINDOWSPE_DATABASE_URL:   "sqlite:///data/windowspe.db?mode=rwc"
+      WINDOWSPE_CONTENT_DIR:    "/srv/windowspe/content"
+      WINDOWSPE_LOG_LEVEL:      "info"
+      WINDOWSPE_CACHE_TTL_SECS: "300"
+      # Set this to your production frontend URL before deploying.
+      # Example: WINDOWSPE_CORS_ORIGINS: "https://windowspe.yourdomain.com"
+      # Leaving this blank or providing an invalid origin causes the backend to
+      # deny ALL cross-origin requests (fail-safe, no AllowOrigin::any() fallback).
+      WINDOWSPE_CORS_ORIGINS:   "http://localhost:3000"
+
+    volumes:
+      - windowspe_data:/data
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  windowspe_data:
+    driver: local

@@ -1,0 +1,459 @@
+{
+  "phase": {
+    "id": "user-enumeration",
+    "title": "User & Group Enumeration",
+    "summary": "Identify the current security context, group memberships, other accounts, and the password policy that frames every later attack.",
+    "icon": "users"
+  },
+  "nodes": [
+    {
+      "id": "user-whoami-all",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "whoami /all",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Dump SID, group memberships, and token privileges in one shot.",
+      "description_md": "The output of `whoami /all` is the single most valuable file in a Windows engagement: SID, all group SIDs (including S-1-5-32-544 Administrators if you happen to be admin), and the enabled/disabled token privileges. The `Privileges` section directly feeds Phase 3.",
+      "prerequisites": [
+        "enum-systeminfo"
+      ],
+      "mitre_attack_id": "T1033",
+      "tags": [
+        "enumeration",
+        "user",
+        "privileges"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "All info",
+          "code": "whoami /all"
+        },
+        {
+          "shell": "cmd",
+          "title": "Privileges only",
+          "code": "whoami /priv"
+        },
+        {
+          "shell": "cmd",
+          "title": "Groups only",
+          "code": "whoami /groups"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1033",
+          "url": "https://attack.mitre.org/techniques/T1033/",
+          "kind": "mitre"
+        }
+      ],
+      "detection_hints": "Repeated `whoami /all` from a non-interactive session is a strong PrivEsc pre-cursor signal."
+    },
+    {
+      "id": "user-groups",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Local groups & members",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Enumerate the local groups and who is in them — especially Administrators, Backup Operators, Power Users.",
+      "description_md": "Membership in Backup Operators (SeBackupPrivilege) or DnsAdmins is a direct privesc path.",
+      "tags": [
+        "enumeration",
+        "groups"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "All groups",
+          "code": "net localgroup"
+        },
+        {
+          "shell": "cmd",
+          "title": "Administrators",
+          "code": "net localgroup Administrators"
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell",
+          "code": "Get-LocalGroup | ForEach-Object { Write-Host \"`n[$_]\"; Get-LocalGroupMember -Name $_ }"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "user-other-users",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Other local accounts",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Find accounts beyond your own — service accounts, leftover test users, and AD accounts cached locally.",
+      "description_md": "Disabled accounts can sometimes be re-enabled, and old service accounts often have weak passwords.",
+      "tags": [
+        "enumeration",
+        "user"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "net user",
+          "code": "net user"
+        },
+        {
+          "shell": "powershell",
+          "title": "Get-LocalUser",
+          "code": "Get-LocalUser | Select-Object Name, Enabled, LastLogon, PasswordRequired"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "user-logged-on",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Active sessions",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Other interactive sessions = potential token theft targets (Phase 11).",
+      "description_md": "If an admin is logged on, `SeImpersonatePrivilege` + named-pipe coercion can give you their token.",
+      "tags": [
+        "enumeration",
+        "sessions"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "query user",
+          "code": "query user"
+        },
+        {
+          "shell": "cmd",
+          "title": "qwinsta",
+          "code": "qwinsta"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "user-pwpolicy",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Password & lockout policy",
+      "severity": "low",
+      "difficulty": "oscp-basic",
+      "summary": "Set the bounds for any password-guessing you may want to do laterally.",
+      "description_md": "If lockout threshold is 0, online brute force is on the table. Otherwise plan offline cracking.",
+      "tags": [
+        "enumeration",
+        "policy"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "net accounts",
+          "code": "net accounts"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "user-is-admin",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Local administrator check",
+      "summary": "Confirm whether your account is a local admin (even if at Medium integrity).",
+      "description_md": "Membership in the local Administrators group means a UAC bypass is enough for full control. Check group membership and the well-known SID `S-1-5-32-544`.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "admin",
+        "groups"
+      ],
+      "related": [
+        "enum-integrity-uac"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Admins group",
+          "code": "net localgroup administrators"
+        },
+        {
+          "shell": "powershell",
+          "title": "Am I admin?",
+          "code": "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Windows Local Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "user-sid-enum",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "SID enumeration",
+      "summary": "Map account names to SIDs for ACL and token analysis.",
+      "description_md": "SIDs are needed to interpret object ACLs and token groups. Enumerate local accounts and their SIDs; a RID of 500 marks the built-in Administrator.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1033",
+      "tags": [
+        "enumeration",
+        "sid",
+        "accounts"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Accounts & SIDs",
+          "code": "wmic useraccount get name,sid"
+        },
+        {
+          "shell": "cmd",
+          "title": "Current user SID",
+          "code": "whoami /user"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1033 — System Owner/User Discovery",
+          "url": "https://attack.mitre.org/techniques/T1033/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "user-token-groups",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Token group membership",
+      "summary": "Inspect every group SID in your token, including restricted/deny-only.",
+      "description_md": "`whoami /groups` shows the full token — including groups granted via nested membership and the integrity label. A deny-only Administrators entry signals a filtered (UAC) token.",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "token",
+        "groups"
+      ],
+      "related": [
+        "priv-whoami-priv"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Token groups",
+          "code": "whoami /groups"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Access Tokens",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/access-tokens",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "user-kerberos-tickets",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Cached Kerberos tickets",
+      "summary": "List cached tickets that may be exportable for Pass-the-Ticket.",
+      "description_md": "`klist` shows tickets in the current logon session. On a multi-user/host with elevated context, cached TGTs/TGSs can be extracted (Rubeus/Mimikatz) and reused — a bridge into AD.",
+      "severity": "medium",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1558",
+      "tags": [
+        "enumeration",
+        "kerberos",
+        "tickets"
+      ],
+      "related": [
+        "ad-kerberoast"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "List tickets",
+          "code": "klist"
+        },
+        {
+          "shell": "cmd",
+          "title": "All sessions (admin)",
+          "code": "klist sessions",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1558 — Steal or Forge Kerberos Tickets",
+          "url": "https://attack.mitre.org/techniques/T1558/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "user-accounts-policy",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Account & lockout policy",
+      "summary": "Read password/lockout policy before any on-box password attempts.",
+      "description_md": "`net accounts` reveals minimum password length, lockout threshold, and lockout duration. Essential before spraying local accounts so you don't lock anyone out.",
+      "severity": "low",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "policy",
+        "password"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Account policy",
+          "code": "net accounts"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Windows Local Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "user-recent-accounts",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Recently created / privileged users",
+      "summary": "Spot interesting accounts and their last-logon timestamps.",
+      "description_md": "Service accounts and recently-created users are high-value. `net user <name>` shows group membership, last logon, and sometimes a password hint in the comment/description field.",
+      "severity": "low",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "accounts"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "All users",
+          "code": "net user"
+        },
+        {
+          "shell": "cmd",
+          "title": "Detail one user",
+          "code": "net user administrator"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1087.001 — Local Account Discovery",
+          "url": "https://attack.mitre.org/techniques/T1087/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "user-sessions",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Interactive sessions",
+      "summary": "Enumerate logged-on sessions for token theft opportunities.",
+      "description_md": "Other users' sessions mean their tokens live in memory. With SeDebug/admin you can impersonate them. `query session` / `qwinsta` lists active and disconnected sessions.",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "tags": [
+        "enumeration",
+        "sessions",
+        "token"
+      ],
+      "related": [
+        "priv-se-debug"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Sessions",
+          "code": "query session & qwinsta"
+        }
+      ],
+      "references": [
+        {
+          "title": "MS Docs — query session",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/query-session",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "user-creds-in-fields",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Passwords in account fields",
+      "summary": "Check description/comment fields where admins sometimes stash passwords.",
+      "description_md": "Lazy admins put passwords in the user **description** or comment. Enumerate every local account's description; in AD the same is true of the `description` attribute.",
+      "severity": "medium",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "credentials",
+        "accounts"
+      ],
+      "related": [
+        "cred-search-files"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Local user descriptions",
+          "code": "Get-LocalUser | Select-Object Name, Enabled, Description"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Windows Local Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "user-clipboard-history",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Clipboard & recent activity",
+      "summary": "Peek at clipboard contents and recently opened files for secrets.",
+      "description_md": "The clipboard frequently holds freshly pasted passwords. Recent-files and RDP history reveal where credentials and sensitive material live.",
+      "severity": "low",
+      "difficulty": "oscp-basic",
+      "tags": [
+        "enumeration",
+        "clipboard"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Clipboard text",
+          "code": "Get-Clipboard"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1115 — Clipboard Data",
+          "url": "https://attack.mitre.org/techniques/T1115/",
+          "kind": "mitre"
+        }
+      ]
+    }
+  ]
+}

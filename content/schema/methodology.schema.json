@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://windowspe.local/schema/methodology.schema.json",
+  "title": "WindowsPE Phase File",
+  "description": "Schema for a single phase file under content/phases/*.json.",
+  "type": "object",
+  "required": ["phase", "nodes"],
+  "additionalProperties": false,
+  "properties": {
+    "phase": { "$ref": "#/$defs/Phase" },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Node" }
+    }
+  },
+  "$defs": {
+    "Slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "minLength": 2,
+      "maxLength": 64
+    },
+    "Severity": {
+      "enum": ["info", "low", "medium", "high", "critical"]
+    },
+    "Difficulty": {
+      "enum": ["oscp-basic", "oscp-advanced", "red-team"]
+    },
+    "Kind": {
+      "enum": ["phase", "category", "technique", "tool"]
+    },
+    "Shell": {
+      "enum": ["powershell", "cmd", "bash", "c", "text"]
+    },
+    "RefKind": {
+      "enum": ["mitre", "hacktricks", "msdoc", "cve", "blog", "tool", "paper"]
+    },
+    "Phase": {
+      "type": "object",
+      "required": ["id", "title", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "id":           { "$ref": "#/$defs/Slug" },
+        "title":        { "type": "string", "minLength": 2 },
+        "summary":      { "type": "string", "minLength": 10 },
+        "icon":         { "type": "string" },
+        "accent_color": { "type": "string", "pattern": "^#?[0-9A-Fa-f]{6}$" }
+      }
+    },
+    "Snippet": {
+      "type": "object",
+      "required": ["shell", "title", "code"],
+      "additionalProperties": false,
+      "properties": {
+        "shell":          { "$ref": "#/$defs/Shell" },
+        "title":          { "type": "string", "minLength": 2 },
+        "code":           { "type": "string", "minLength": 1 },
+        "description":    { "type": "string" },
+        "requires_admin": { "type": "boolean", "default": false }
+      }
+    },
+    "Reference": {
+      "type": "object",
+      "required": ["title", "url", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 2 },
+        "url":   { "type": "string", "format": "uri" },
+        "kind":  { "$ref": "#/$defs/RefKind" }
+      }
+    },
+    "Node": {
+      "type": "object",
+      "required": ["id", "kind", "title", "summary", "severity"],
+      "additionalProperties": false,
+      "properties": {
+        "id":              { "$ref": "#/$defs/Slug" },
+        "parent_id":       { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Slug" }] },
+        "kind":            { "$ref": "#/$defs/Kind" },
+        "title":           { "type": "string", "minLength": 2 },
+        "summary":         { "type": "string", "minLength": 10 },
+        "description_md":  { "type": "string" },
+        "severity":        { "$ref": "#/$defs/Severity" },
+        "difficulty":      { "$ref": "#/$defs/Difficulty" },
+        "mitre_attack_id": { "type": "string", "pattern": "^T\\d{4}(\\.\\d{3})?$" },
+        "detection_hints": { "type": "string" },
+        "tags":            { "type": "array", "items": { "$ref": "#/$defs/Slug" } },
+        "prerequisites":   { "type": "array", "items": { "$ref": "#/$defs/Slug" } },
+        "related":         { "type": "array", "items": { "$ref": "#/$defs/Slug" } },
+        "snippets":        { "type": "array", "items": { "$ref": "#/$defs/Snippet" } },
+        "references":      { "type": "array", "items": { "$ref": "#/$defs/Reference" } }
+      }
+    }
+  }
+}

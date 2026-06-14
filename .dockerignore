@@ -1,0 +1,28 @@
+# Build artefacts
+**/target
+**/node_modules
+**/.next
+**/out
+**/dist
+**/build
+
+# Local env + state
+**/.env
+**/.env.local
+**/.env.*.local
+**/windowspe.db
+**/windowspe.db-*
+
+# VCS + tooling
+.git
+.github
+**/.vscode
+**/.idea
+**/.DS_Store
+**/*.log
+**/coverage
+
+# Docs that don't belong in the image
+README.md
+docker-compose.yml
+.dockerignore

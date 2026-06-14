@@ -1,0 +1,42 @@
+# ── Backend (Rust / SQLite) ────────────────────────────────────────────
+backend/target/
+backend/*.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
+backend/.env
+
+# ── Frontend (Next.js) ────────────────────────────────────────────────
+frontend/.next/
+frontend/node_modules/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/*.log
+
+# ── Editor metadata ───────────────────────────────────────────────────
+.idea/
+.vscode/
+.DS_Store
+*.orig
+
+# ── Logs ──────────────────────────────────────────────────────────────
+*.log
+
+# ── Generic fallbacks (defence-in-depth if the layout ever shifts) ────
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+.env
+.env.local
+.env.*.local
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo

